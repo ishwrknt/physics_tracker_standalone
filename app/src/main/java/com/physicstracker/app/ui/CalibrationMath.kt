@@ -5,10 +5,12 @@ import com.physicstracker.app.data.TrackPointEntity
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.hypot
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 data class CalibratedPoint(
     val pointId: Long,
+    val trackerId: String,
     val frameNumber: Int,
     val timestampUs: Long,
     val xMeters: Double,
@@ -22,6 +24,7 @@ data class CalibrationMetrics(
 
 data class KinematicsPoint(
     val pointId: Long,
+    val trackerId: String,
     val frameNumber: Int,
     val timestampUs: Long,
     val xMeters: Double,
@@ -60,6 +63,9 @@ fun calibrationMetrics(calibration: CalibrationEntity): CalibrationMetrics? {
 }
 
 fun calibratePoint(point: TrackPointEntity, calibration: CalibrationEntity): CalibratedPoint? {
+    if (point.coordinateSpace != calibration.coordinateSpace) return null
+    if (point.coordinateSpace == "SOURCE_VIDEO" &&
+        (point.sourceWidth != calibration.sourceWidth || point.sourceHeight != calibration.sourceHeight)) return null
     val metrics = calibrationMetrics(calibration) ?: return null
     val radians = (calibration.rotationDegrees / 180.0) * PI
     val xAxisX = cos(radians)
@@ -75,6 +81,7 @@ fun calibratePoint(point: TrackPointEntity, calibration: CalibrationEntity): Cal
 
     return CalibratedPoint(
         pointId = point.id,
+        trackerId = point.trackerId,
         frameNumber = point.frameNumber,
         timestampUs = point.timestampUs,
         xMeters = xMeters,
@@ -87,7 +94,11 @@ private data class Vector2(
     val y: Double
 )
 
-private val smoothingKernel = doubleArrayOf(1.0, 2.0, 3.0, 2.0, 1.0)
+fun positionAverageRadiusForStrength(strength: Float): Int =
+    (strength.coerceIn(0f, 1f) * 4f).roundToInt().coerceIn(1, 4)
+
+fun positionAverageWindowForStrength(strength: Float): Int =
+    positionAverageRadiusForStrength(strength) * 2 + 1
 
 private fun secondsBetween(startUs: Long, endUs: Long): Double? {
     val deltaUs = endUs - startUs
@@ -128,15 +139,20 @@ private fun accelerationAt(
     )
 }
 
-private fun smoothCalibratedPoints(points: List<CalibratedPoint>): List<CalibratedPoint> {
-    if (points.size < 5) return points
+private fun averageCalibratedPositions(
+    points: List<CalibratedPoint>,
+    radius: Int
+): List<CalibratedPoint> {
+    if (points.size < 3 || radius <= 0) return points
     return points.indices.map { index ->
         var weightedX = 0.0
         var weightedY = 0.0
         var totalWeight = 0.0
-        smoothingKernel.forEachIndexed { kernelIndex, kernelWeight ->
-            val offset = kernelIndex - 2
-            val sampleIndex = (index + offset).coerceIn(0, points.lastIndex)
+        val start = (index - radius).coerceAtLeast(0)
+        val end = (index + radius).coerceAtMost(points.lastIndex)
+        for (sampleIndex in start..end) {
+            val distance = kotlin.math.abs(sampleIndex - index)
+            val kernelWeight = (radius + 1 - distance).toDouble()
             val sample = points[sampleIndex]
             weightedX += sample.xMeters * kernelWeight
             weightedY += sample.yMeters * kernelWeight
@@ -149,15 +165,57 @@ private fun smoothCalibratedPoints(points: List<CalibratedPoint>): List<Calibrat
     }
 }
 
-fun computeKinematics(points: List<CalibratedPoint>): List<KinematicsPoint> {
+/**
+ * Calculates a derived kinematics series without modifying persisted observations.
+ *
+ * A non-zero [positionAverageRadius] applies a centered triangular average to positions
+ * before differentiation. Tracks and discontinuous frame segments are processed
+ * independently so an average or derivative never bridges identities or missing frames.
+ */
+fun computeKinematics(
+    points: List<CalibratedPoint>,
+    positionAverageRadius: Int = 0
+): List<KinematicsPoint> =
+    points.groupBy { it.trackerId }
+        .values
+        .flatMap { track ->
+            splitContinuousSegments(track.sortedBy { it.timestampUs })
+                .flatMap { segment -> computeSingleTrackKinematics(segment, positionAverageRadius) }
+        }
+        .sortedWith(compareBy<KinematicsPoint> { it.timestampUs }.thenBy { it.trackerId })
+
+private fun splitContinuousSegments(points: List<CalibratedPoint>): List<List<CalibratedPoint>> {
     if (points.isEmpty()) return emptyList()
-    val smoothedPoints = smoothCalibratedPoints(points)
-    val velocities = smoothedPoints.indices.map { index -> velocityAt(smoothedPoints, index) }
-    return smoothedPoints.mapIndexed { index, point ->
+    val segments = mutableListOf<MutableList<CalibratedPoint>>()
+    points.forEach { point ->
+        val current = segments.lastOrNull()
+        val previous = current?.lastOrNull()
+        val isContinuous = previous != null &&
+            point.frameNumber == previous.frameNumber + 1 &&
+            point.timestampUs > previous.timestampUs
+        if (current == null || !isContinuous) {
+            segments += mutableListOf(point)
+        } else {
+            current += point
+        }
+    }
+    return segments
+}
+
+private fun computeSingleTrackKinematics(
+    points: List<CalibratedPoint>,
+    positionAverageRadius: Int
+): List<KinematicsPoint> {
+    if (points.isEmpty()) return emptyList()
+    val derivedPositions = averageCalibratedPositions(points, positionAverageRadius)
+    val velocities = derivedPositions.indices.map { index -> velocityAt(derivedPositions, index) }
+    val timestamps = derivedPositions.map { it.timestampUs }
+    return derivedPositions.mapIndexed { index, point ->
         val velocity = velocities[index]
-        val acceleration = accelerationAt(smoothedPoints.map { it.timestampUs }, velocities, index)
+        val acceleration = accelerationAt(timestamps, velocities, index)
         KinematicsPoint(
             pointId = point.pointId,
+            trackerId = point.trackerId,
             frameNumber = point.frameNumber,
             timestampUs = point.timestampUs,
             xMeters = point.xMeters,

@@ -8,7 +8,8 @@ import javax.inject.Singleton
 class PhysicsRepository @Inject constructor(
     private val projectDao: ProjectDao,
     private val trackPointDao: TrackPointDao,
-    private val calibrationDao: CalibrationDao
+    private val calibrationDao: CalibrationDao,
+    private val trackerDao: TrackerDao
 ) {
     fun getProjects(): Flow<List<ProjectEntity>> = projectDao.getAllProjects()
     
@@ -37,6 +38,9 @@ class PhysicsRepository @Inject constructor(
     suspend fun updateMassForTrack(projectId: Long, trackLabel: String, massKg: Double) =
         trackPointDao.updateMassForTrack(projectId, trackLabel, massKg)
 
+    suspend fun deleteTrackerRange(projectId: Long, trackerId: String, startFrame: Int, endFrame: Int) =
+        trackPointDao.deleteTrackerRange(projectId, trackerId, startFrame, endFrame)
+
     fun getCalibrationForProject(projectId: Long): Flow<CalibrationEntity?> =
         calibrationDao.getCalibrationForProject(projectId)
 
@@ -45,4 +49,11 @@ class PhysicsRepository @Inject constructor(
 
     suspend fun deleteCalibration(projectId: Long) =
         calibrationDao.deleteCalibrationForProject(projectId)
+
+    fun getTrackersForProject(projectId: Long): Flow<List<TrackerEntity>> =
+        trackerDao.getTrackersForProject(projectId)
+
+    suspend fun upsertTracker(tracker: TrackerEntity) = trackerDao.upsertTracker(tracker)
+
+    suspend fun deleteTracker(tracker: TrackerEntity) = trackerDao.deleteTracker(tracker)
 }

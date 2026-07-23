@@ -1,0 +1,401 @@
+{
+  "seed": 9173,
+  "frame_count_per_case": 150,
+  "cases": {
+    "stationary": {
+      "baseline": {
+        "labelled_frames": 150,
+        "measured_frames": 150,
+        "mean_error_px": 0.0,
+        "median_error_px": 0.0,
+        "p95_error_px": 0.0,
+        "max_error_px": 0.0,
+        "false_lock_count": 0,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.09918608702719212,
+        "pause_count": 0
+      },
+      "candidate": {
+        "labelled_frames": 150,
+        "measured_frames": 150,
+        "mean_error_px": 0.0,
+        "median_error_px": 0.0,
+        "p95_error_px": 0.0,
+        "max_error_px": 0.0,
+        "false_lock_count": 0,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.5866257382413035,
+        "pause_count": 0
+      }
+    },
+    "constant_velocity": {
+      "baseline": {
+        "labelled_frames": 150,
+        "measured_frames": 150,
+        "mean_error_px": 0.39999999999999325,
+        "median_error_px": 0.39999999999997726,
+        "p95_error_px": 0.7999999999999972,
+        "max_error_px": 0.8000000000000114,
+        "false_lock_count": 0,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.10250214777961873,
+        "pause_count": 0
+      },
+      "candidate": {
+        "labelled_frames": 150,
+        "measured_frames": 150,
+        "mean_error_px": 0.39999999999999325,
+        "median_error_px": 0.39999999999997726,
+        "p95_error_px": 0.7999999999999972,
+        "max_error_px": 0.8000000000000114,
+        "false_lock_count": 0,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.7207302150829077,
+        "pause_count": 0
+      }
+    },
+    "constant_acceleration": {
+      "baseline": {
+        "labelled_frames": 150,
+        "measured_frames": 150,
+        "mean_error_px": 0.7170561197617503,
+        "median_error_px": 0.7537465499385541,
+        "p95_error_px": 1.1624044046716266,
+        "max_error_px": 1.2557961618033517,
+        "false_lock_count": 0,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.09336307388574085,
+        "pause_count": 0
+      },
+      "candidate": {
+        "labelled_frames": 150,
+        "measured_frames": 150,
+        "mean_error_px": 0.7170561197617503,
+        "median_error_px": 0.7537465499385541,
+        "p95_error_px": 1.1624044046716266,
+        "max_error_px": 1.2557961618033517,
+        "false_lock_count": 0,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.6852871613364492,
+        "pause_count": 0
+      }
+    },
+    "circular_motion": {
+      "baseline": {
+        "labelled_frames": 150,
+        "measured_frames": 150,
+        "mean_error_px": 0.7985441473434527,
+        "median_error_px": 0.8500826080740002,
+        "p95_error_px": 1.178635881383657,
+        "max_error_px": 1.295771273393773,
+        "false_lock_count": 0,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.09767228859357986,
+        "pause_count": 0
+      },
+      "candidate": {
+        "labelled_frames": 150,
+        "measured_frames": 150,
+        "mean_error_px": 0.7985441473434527,
+        "median_error_px": 0.8500826080740002,
+        "p95_error_px": 1.178635881383657,
+        "max_error_px": 1.295771273393773,
+        "false_lock_count": 0,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.6729806644448247,
+        "pause_count": 0
+      }
+    },
+    "large_displacement": {
+      "baseline": {
+        "labelled_frames": 150,
+        "measured_frames": 150,
+        "mean_error_px": 39.06861828307973,
+        "median_error_px": 0.5,
+        "p95_error_px": 249.8839730755056,
+        "max_error_px": 271.31393255783973,
+        "false_lock_count": 33,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.12096102019746932,
+        "pause_count": 0
+      },
+      "candidate": {
+        "labelled_frames": 150,
+        "measured_frames": 34,
+        "mean_error_px": 0.25,
+        "median_error_px": 0.25,
+        "p95_error_px": 0.5,
+        "max_error_px": 0.5,
+        "false_lock_count": 0,
+        "tracking_loss_rate": 0.7733333333333333,
+        "time_per_frame_ms": 0.3868591813089314,
+        "pause_count": 116
+      }
+    },
+    "scale_rotation": {
+      "baseline": {
+        "labelled_frames": 150,
+        "measured_frames": 150,
+        "mean_error_px": 2.444328142459875,
+        "median_error_px": 1.978932933886075,
+        "p95_error_px": 5.946083552075829,
+        "max_error_px": 6.254150688639385,
+        "false_lock_count": 0,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.09751844965234,
+        "pause_count": 0
+      },
+      "candidate": {
+        "labelled_frames": 150,
+        "measured_frames": 75,
+        "mean_error_px": 0.7658230893380331,
+        "median_error_px": 0.8123740902057293,
+        "p95_error_px": 1.2242968227302127,
+        "max_error_px": 1.3540181810407688,
+        "false_lock_count": 0,
+        "tracking_loss_rate": 0.5,
+        "time_per_frame_ms": 0.3623738927897941,
+        "pause_count": 75
+      }
+    },
+    "temporary_occlusion": {
+      "baseline": {
+        "labelled_frames": 134,
+        "measured_frames": 134,
+        "mean_error_px": 1.3206333222313595,
+        "median_error_px": 0.8131166110040737,
+        "p95_error_px": 1.2142292401317245,
+        "max_error_px": 77.54373971368106,
+        "false_lock_count": 1,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.1112003291132016,
+        "pause_count": 0
+      },
+      "candidate": {
+        "labelled_frames": 134,
+        "measured_frames": 134,
+        "mean_error_px": 0.7482886820891078,
+        "median_error_px": 0.8131166110040737,
+        "p95_error_px": 1.209667976934175,
+        "max_error_px": 1.3540181810407688,
+        "false_lock_count": 0,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.9048755570539843,
+        "pause_count": 16
+      }
+    },
+    "reappearance": {
+      "baseline": {
+        "labelled_frames": 134,
+        "measured_frames": 134,
+        "mean_error_px": 1.3206333222313595,
+        "median_error_px": 0.8131166110040737,
+        "p95_error_px": 1.2142292401317245,
+        "max_error_px": 77.54373971368106,
+        "false_lock_count": 1,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.10629473824441533,
+        "pause_count": 0
+      },
+      "candidate": {
+        "labelled_frames": 134,
+        "measured_frames": 134,
+        "mean_error_px": 0.7482886820891078,
+        "median_error_px": 0.8131166110040737,
+        "p95_error_px": 1.209667976934175,
+        "max_error_px": 1.3540181810407688,
+        "false_lock_count": 0,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.8242507851932623,
+        "pause_count": 16
+      }
+    },
+    "lighting_change": {
+      "baseline": {
+        "labelled_frames": 150,
+        "measured_frames": 150,
+        "mean_error_px": 0.745308285648584,
+        "median_error_px": 0.8114407784432971,
+        "p95_error_px": 1.209667976934175,
+        "max_error_px": 1.3540181810407688,
+        "false_lock_count": 0,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.10749871136258113,
+        "pause_count": 0
+      },
+      "candidate": {
+        "labelled_frames": 150,
+        "measured_frames": 150,
+        "mean_error_px": 0.745308285648584,
+        "median_error_px": 0.8114407784432971,
+        "p95_error_px": 1.209667976934175,
+        "max_error_px": 1.3540181810407688,
+        "false_lock_count": 0,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.688549765188797,
+        "pause_count": 0
+      }
+    },
+    "background_clutter": {
+      "baseline": {
+        "labelled_frames": 150,
+        "measured_frames": 150,
+        "mean_error_px": 16.218266425645062,
+        "median_error_px": 0.9184126035536966,
+        "p95_error_px": 64.97049521859648,
+        "max_error_px": 74.44899451705732,
+        "false_lock_count": 41,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.1025445299885617,
+        "pause_count": 0
+      },
+      "candidate": {
+        "labelled_frames": 150,
+        "measured_frames": 95,
+        "mean_error_px": 0.7629739424877674,
+        "median_error_px": 0.8138591318024181,
+        "p95_error_px": 1.2142292401317245,
+        "max_error_px": 1.3540181810407688,
+        "false_lock_count": 0,
+        "tracking_loss_rate": 0.36666666666666664,
+        "time_per_frame_ms": 0.4852162283413962,
+        "pause_count": 55
+      }
+    },
+    "crossing_objects": {
+      "baseline": {
+        "labelled_frames": 150,
+        "measured_frames": 150,
+        "mean_error_px": 39.31057026878284,
+        "median_error_px": 0.9000000000000057,
+        "p95_error_px": 160.1,
+        "max_error_px": 179.95000000000005,
+        "false_lock_count": 57,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.10001387926843643,
+        "pause_count": 0
+      },
+      "candidate": {
+        "labelled_frames": 150,
+        "measured_frames": 79,
+        "mean_error_px": 0.4753164556962059,
+        "median_error_px": 0.5,
+        "p95_error_px": 0.9000000000000057,
+        "max_error_px": 0.9500000000000028,
+        "false_lock_count": 0,
+        "tracking_loss_rate": 0.47333333333333333,
+        "time_per_frame_ms": 0.3864624832081765,
+        "pause_count": 71
+      }
+    },
+    "similar_distractor": {
+      "baseline": {
+        "labelled_frames": 150,
+        "measured_frames": 150,
+        "mean_error_px": 16.218266425645062,
+        "median_error_px": 0.9184126035536966,
+        "p95_error_px": 64.97049521859648,
+        "max_error_px": 74.44899451705732,
+        "false_lock_count": 41,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.10529732223812666,
+        "pause_count": 0
+      },
+      "candidate": {
+        "labelled_frames": 150,
+        "measured_frames": 95,
+        "mean_error_px": 0.7629739424877674,
+        "median_error_px": 0.8138591318024181,
+        "p95_error_px": 1.2142292401317245,
+        "max_error_px": 1.3540181810407688,
+        "false_lock_count": 0,
+        "tracking_loss_rate": 0.36666666666666664,
+        "time_per_frame_ms": 0.48992026873845484,
+        "pause_count": 55
+      }
+    },
+    "camera_vibration": {
+      "baseline": {
+        "labelled_frames": 150,
+        "measured_frames": 150,
+        "mean_error_px": 0.7453082856485839,
+        "median_error_px": 0.8114407784432971,
+        "p95_error_px": 1.209667976934175,
+        "max_error_px": 1.3540181810407688,
+        "false_lock_count": 0,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.09504545615960988,
+        "pause_count": 0
+      },
+      "candidate": {
+        "labelled_frames": 150,
+        "measured_frames": 150,
+        "mean_error_px": 0.7453082856485839,
+        "median_error_px": 0.8114407784432971,
+        "p95_error_px": 1.209667976934175,
+        "max_error_px": 1.3540181810407688,
+        "false_lock_count": 0,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.6628416513011559,
+        "pause_count": 0
+      }
+    },
+    "global_camera_motion": {
+      "baseline": {
+        "labelled_frames": 150,
+        "measured_frames": 150,
+        "mean_error_px": 0.745308285648584,
+        "median_error_px": 0.8114407784432971,
+        "p95_error_px": 1.209667976934175,
+        "max_error_px": 1.3540181810407688,
+        "false_lock_count": 0,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.09717976544739916,
+        "pause_count": 0
+      },
+      "candidate": {
+        "labelled_frames": 150,
+        "measured_frames": 150,
+        "mean_error_px": 0.745308285648584,
+        "median_error_px": 0.8114407784432971,
+        "p95_error_px": 1.209667976934175,
+        "max_error_px": 1.3540181810407688,
+        "false_lock_count": 0,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.6589207652918745,
+        "pause_count": 0
+      }
+    },
+    "compression_artifacts": {
+      "baseline": {
+        "labelled_frames": 150,
+        "measured_frames": 150,
+        "mean_error_px": 0.745308285648584,
+        "median_error_px": 0.8114407784432971,
+        "p95_error_px": 1.209667976934175,
+        "max_error_px": 1.3540181810407688,
+        "false_lock_count": 0,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.096312651001292,
+        "pause_count": 0
+      },
+      "candidate": {
+        "labelled_frames": 150,
+        "measured_frames": 150,
+        "mean_error_px": 0.745308285648584,
+        "median_error_px": 0.8114407784432971,
+        "p95_error_px": 1.209667976934175,
+        "max_error_px": 1.3540181810407688,
+        "false_lock_count": 0,
+        "tracking_loss_rate": 0.0,
+        "time_per_frame_ms": 0.6467163556524171,
+        "pause_count": 0
+      }
+    }
+  },
+  "variable_frame_timing": {
+    "sample_count": 150,
+    "maximum_delta_us": 66656,
+    "irregular": true
+  }
+}

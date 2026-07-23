@@ -43,6 +43,9 @@ interface TrackPointDao {
 
     @Query("UPDATE track_points SET massKg = :massKg WHERE projectId = :projectId AND trackLabel = :trackLabel")
     suspend fun updateMassForTrack(projectId: Long, trackLabel: String, massKg: Double)
+
+    @Query("DELETE FROM track_points WHERE projectId = :projectId AND trackerId = :trackerId AND frameNumber BETWEEN :startFrame AND :endFrame")
+    suspend fun deleteTrackerRange(projectId: Long, trackerId: String, startFrame: Int, endFrame: Int)
 }
 
 @Dao
@@ -55,4 +58,16 @@ interface CalibrationDao {
 
     @Query("DELETE FROM calibration WHERE projectId = :projectId")
     suspend fun deleteCalibrationForProject(projectId: Long)
+}
+
+@Dao
+interface TrackerDao {
+    @Query("SELECT * FROM trackers WHERE projectId = :projectId ORDER BY displayOrder, createdAt, id")
+    fun getTrackersForProject(projectId: Long): Flow<List<TrackerEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertTracker(tracker: TrackerEntity)
+
+    @Delete
+    suspend fun deleteTracker(tracker: TrackerEntity)
 }

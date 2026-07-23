@@ -8,6 +8,7 @@ import com.physicstracker.app.data.AppDatabase
 import com.physicstracker.app.data.CalibrationDao
 import com.physicstracker.app.data.ProjectDao
 import com.physicstracker.app.data.TrackPointDao
+import com.physicstracker.app.data.TrackerDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -80,6 +81,56 @@ object DatabaseModule {
         }
     }
 
+    val MIGRATION_5_6 = object : Migration(5, 6) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE calibration ADD COLUMN coordinateSpace TEXT NOT NULL DEFAULT 'LEGACY_DISPLAY'")
+            db.execSQL("ALTER TABLE calibration ADD COLUMN sourceWidth INTEGER")
+            db.execSQL("ALTER TABLE calibration ADD COLUMN sourceHeight INTEGER")
+            db.execSQL("ALTER TABLE track_points ADD COLUMN trackerId TEXT NOT NULL DEFAULT 'A'")
+            db.execSQL("UPDATE track_points SET trackerId = trackLabel")
+            db.execSQL("ALTER TABLE track_points ADD COLUMN requestedTimestampUs INTEGER")
+            db.execSQL("ALTER TABLE track_points ADD COLUMN actualTimestampUs INTEGER")
+            db.execSQL("ALTER TABLE track_points ADD COLUMN sourceWidth INTEGER")
+            db.execSQL("ALTER TABLE track_points ADD COLUMN sourceHeight INTEGER")
+            db.execSQL("ALTER TABLE track_points ADD COLUMN coordinateSpace TEXT NOT NULL DEFAULT 'LEGACY_DISPLAY'")
+            db.execSQL("ALTER TABLE track_points ADD COLUMN observationKind TEXT NOT NULL DEFAULT 'MANUAL'")
+            db.execSQL("ALTER TABLE track_points ADD COLUMN sourceAlgorithm TEXT NOT NULL DEFAULT 'legacy'")
+            db.execSQL("ALTER TABLE track_points ADD COLUMN confidence REAL")
+            db.execSQL("ALTER TABLE track_points ADD COLUMN matchScore REAL")
+            db.execSQL("ALTER TABLE track_points ADD COLUMN ambiguity REAL")
+            db.execSQL("ALTER TABLE track_points ADD COLUMN residualErrorPx REAL")
+            db.execSQL("ALTER TABLE track_points ADD COLUMN refinementMethod TEXT")
+            db.execSQL("ALTER TABLE track_points ADD COLUMN recoveryStatus TEXT")
+            db.execSQL("ALTER TABLE track_points ADD COLUMN isManualCorrection INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE track_points ADD COLUMN isProtectedKeyframe INTEGER NOT NULL DEFAULT 0")
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS trackers (
+                    id TEXT NOT NULL PRIMARY KEY,
+                    projectId INTEGER NOT NULL,
+                    displayName TEXT NOT NULL,
+                    colorArgb INTEGER NOT NULL,
+                    displayOrder INTEGER NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    createdAt INTEGER NOT NULL,
+                    FOREIGN KEY(projectId) REFERENCES projects(id) ON DELETE CASCADE
+                )
+                """.trimIndent()
+            )
+            db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_trackers_projectId_displayOrder ON trackers(projectId, displayOrder)")
+            db.execSQL(
+                """
+                INSERT OR IGNORE INTO trackers (id, projectId, displayName, colorArgb, displayOrder, enabled, createdAt)
+                SELECT CAST(projectId AS TEXT) || ':' || trackLabel, projectId, trackLabel,
+                    CASE WHEN trackLabel = 'B' THEN 4294936576 ELSE 4278255360 END,
+                    CASE WHEN trackLabel = 'B' THEN 1 ELSE 0 END, 1, 0
+                FROM track_points GROUP BY projectId, trackLabel
+                """.trimIndent()
+            )
+            db.execSQL("UPDATE track_points SET trackerId = CAST(projectId AS TEXT) || ':' || trackLabel")
+        }
+    }
+
     @Provides
     @Singleton
     fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase {
@@ -92,6 +143,7 @@ object DatabaseModule {
             .addMigrations(MIGRATION_2_3)
             .addMigrations(MIGRATION_3_4)
             .addMigrations(MIGRATION_4_5)
+            .addMigrations(MIGRATION_5_6)
             .build()
     }
 
@@ -109,4 +161,7 @@ object DatabaseModule {
     fun provideCalibrationDao(database: AppDatabase): CalibrationDao {
         return database.calibrationDao()
     }
+
+    @Provides
+    fun provideTrackerDao(database: AppDatabase): TrackerDao = database.trackerDao()
 }

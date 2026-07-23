@@ -1,5 +1,6 @@
 package com.physicstracker.app.ui.analysis
 
+import com.physicstracker.app.ui.positionAverageWindowForStrength
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -45,6 +46,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -83,31 +85,49 @@ fun AnalysisWorkspace(
         if (fullGraphVisible) {
             Box(modifier = Modifier.fillMaxSize()) {
                 graphContent()
-                OutlinedButton(
-                    onClick = { onFullGraphVisibleChange(false) },
-                    border = BorderStroke(1.dp, PhysicsColorDivider),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        containerColor = Color.Black.copy(alpha = 0.72f),
-                        contentColor = Color.White
-                    ),
-                    shape = RoundedCornerShape(6.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                Row(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .padding(10.dp)
+                        .zIndex(20f),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Text("Exit Full Graph", style = MaterialTheme.typography.labelSmall)
+                    OutlinedButton(
+                        onClick = { onFullGraphVisibleChange(false) },
+                        border = BorderStroke(1.dp, PhysicsColorDivider),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = Color.Black.copy(alpha = 0.78f),
+                            contentColor = Color.White
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 7.dp)
+                    ) {
+                        Text("BACK", style = MaterialTheme.typography.labelSmall)
+                    }
+                    OutlinedButton(
+                        onClick = state.onExitFullScreen,
+                        border = BorderStroke(1.dp, PhysicsColorPrimary),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = Color.Black.copy(alpha = 0.82f),
+                            contentColor = Color.White
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 7.dp)
+                    ) {
+                        Text("EXIT FULL SCREEN", style = MaterialTheme.typography.labelSmall)
+                    }
                 }
             }
             return@Surface
         }
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 androidx.compose.foundation.layout.BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                     val totalWidthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
                     val totalHeightDp = maxHeight
@@ -127,13 +147,11 @@ fun AnalysisWorkspace(
                                 ) {
                                     graphContent()
                                 }
-                                AnalysisContextControls(state, statistics, motion, spectrum)
                                 AnalysisModeBar(
                                     modules = modules,
                                     selectedModule = state.selectedModule,
                                     onSelectedModuleChange = onSelectedModuleChange,
-                                    onShowFullGraph = { onFullGraphVisibleChange(true) },
-                                    onExitFullScreen = state.onExitFullScreen
+                                    onShowFullGraph = { onFullGraphVisibleChange(true) }
                                 )
                             }
                             AnalysisVerticalSplitter(totalWidthPx) {
@@ -169,6 +187,23 @@ fun AnalysisWorkspace(
                     }
                 }
             }
+            }
+            OutlinedButton(
+                onClick = state.onExitFullScreen,
+                border = BorderStroke(1.dp, PhysicsColorPrimary),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    containerColor = Color.Black.copy(alpha = 0.82f),
+                    contentColor = Color.White
+                ),
+                shape = RoundedCornerShape(8.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 7.dp),
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(12.dp)
+                    .zIndex(20f)
+            ) {
+                Text("EXIT FULL SCREEN", style = MaterialTheme.typography.labelSmall)
+            }
         }
     }
 }
@@ -178,8 +213,7 @@ private fun AnalysisModeBar(
     modules: List<AnalysisModuleSpec>,
     selectedModule: AnalysisModuleId,
     onSelectedModuleChange: (AnalysisModuleId) -> Unit,
-    onShowFullGraph: () -> Unit,
-    onExitFullScreen: () -> Unit
+    onShowFullGraph: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -215,18 +249,6 @@ private fun AnalysisModeBar(
             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
         ) {
             Text("Full Graph", style = MaterialTheme.typography.labelSmall, maxLines = 1)
-        }
-        OutlinedButton(
-            onClick = onExitFullScreen,
-            border = BorderStroke(1.dp, PhysicsColorDivider),
-            colors = ButtonDefaults.outlinedButtonColors(
-                containerColor = Color.Black.copy(alpha = 0.25f),
-                contentColor = Color.White
-            ),
-            shape = RoundedCornerShape(6.dp),
-            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-        ) {
-            Text("Exit Full Screen", style = MaterialTheme.typography.labelSmall, maxLines = 1)
         }
     }
 }
@@ -309,7 +331,14 @@ private fun AnalysisInspector(
                         MetricRow("Rows", state.rows.size.toString())
                         MetricRow("Y series", state.selectedSeriesLabel)
                         MetricRow("X series", state.selectedXAxisLabel)
-                        MetricRow("Smoothing", if (state.smoothingEnabled) "On" else "Off")
+                        MetricRow(
+                            "Position average",
+                            if (state.smoothingEnabled) {
+                                "${positionAverageWindowForStrength(state.filterStrength)} samples"
+                            } else {
+                                "Off"
+                            }
+                        )
                         MetricRow("Outlier filter", if (state.outlierFilterEnabled) "On" else "Off")
                         MetricRow("Signal filter", activeSignalFilterLabel(state))
                         MetricRow("Baseline", if (state.baselineCorrectionEnabled) "Corrected" else "Original")
@@ -442,7 +471,7 @@ private fun AnalysisContextControls(
         ) {
             when (state.selectedModule) {
                 AnalysisModuleId.DATA -> {
-                    ToggleAction("Smooth", state.smoothingEnabled, Modifier.width(96.dp)) {
+                    ToggleAction("Pos avg", state.smoothingEnabled, Modifier.width(96.dp)) {
                         state.onSmoothingEnabledChange(!state.smoothingEnabled)
                     }
                     ToggleAction("Outliers", state.outlierFilterEnabled, Modifier.width(100.dp)) {
@@ -464,7 +493,7 @@ private fun AnalysisContextControls(
                         state.onNormalizationEnabledChange(!state.normalizationEnabled)
                     }
                     ToolbarSlider(
-                        label = "Strength",
+                        label = "Filter strength",
                         value = state.filterStrength,
                         onValueChange = state.onFilterStrengthChange
                     )
@@ -509,7 +538,7 @@ private fun AnalysisContextControls(
                     ToggleAction("Band-pass", state.bandPassFilterEnabled, Modifier.width(106.dp)) {
                         state.onBandPassFilterEnabledChange(!state.bandPassFilterEnabled)
                     }
-                    ToggleAction("Smooth", state.smoothingEnabled, Modifier.width(96.dp)) {
+                    ToggleAction("Pos avg", state.smoothingEnabled, Modifier.width(96.dp)) {
                         state.onSmoothingEnabledChange(!state.smoothingEnabled)
                     }
                     ToolbarMetric("FFT", "${spectrum.binCount} bins")

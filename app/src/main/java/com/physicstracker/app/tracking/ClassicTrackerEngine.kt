@@ -34,6 +34,8 @@ data class ClassicTrackingSeed(
     val objectLuma: Float = 0f,
     val backgroundLuma: Float = 0f,
     val objectIsBrighter: Boolean = true,
+    val objectHue: Float = 0f,
+    val objectSaturation: Float = 0f,
     val sourceWidth: Int,
     val sourceHeight: Int
 )
@@ -44,20 +46,27 @@ data class ClassicTrackingUpdate(
     val errorScore: Double,
     val confidence: Double,
     val estimatedRadiusPx: Float,
-    val trackingSource: String
+    val trackingSource: String,
+    val ambiguityRatio: Double?,
+    val residualErrorPx: Double,
+    val diagnostics: TrackingDiagnostics
 )
 
 class ClassicTrackerEngine(
-    private val mode: ClassicTrackerMode
+    private val mode: ClassicTrackerMode,
+    quality: TrackingQuality = if (mode == ClassicTrackerMode.FAST) TrackingQuality.QUICK else TrackingQuality.SMART,
+    private val targetProfile: TargetProfile = TargetProfile.OBJECT,
+    recoveryPolicy: RecoveryPolicy = quality.defaultRecoveryPolicy()
 ) {
+    private val integrityGate = TrackingIntegrityGate(quality, recoveryPolicy)
     private val profile = when (mode) {
         ClassicTrackerMode.FAST -> Profile(
-            maxSearchRadiusPx = searchRadiusFastMaxPx,
+            maxSearchRadiusPx = if (targetProfile == TargetProfile.ROBUST) 160 else searchRadiusFastMaxPx,
             maxMeanError = 900.0,
             templateRefreshThreshold = 10.0
         )
         ClassicTrackerMode.ACCURATE -> Profile(
-            maxSearchRadiusPx = searchRadiusAccurateMaxPx,
+            maxSearchRadiusPx = if (targetProfile == TargetProfile.ROBUST) 180 else searchRadiusAccurateMaxPx,
             maxMeanError = 28.0,
             templateRefreshThreshold = 14.0
         )
@@ -78,6 +87,8 @@ class ClassicTrackerEngine(
             objectLuma = geometrySeed.objectLuma,
             backgroundLuma = geometrySeed.backgroundLuma,
             objectIsBrighter = geometrySeed.objectIsBrighter,
+            objectHue = geometrySeed.objectHue,
+            objectSaturation = geometrySeed.objectSaturation,
             sourceWidth = bitmap.width,
             sourceHeight = bitmap.height
         )
@@ -89,15 +100,19 @@ class ClassicTrackerEngine(
             .coerceAtMost(profile.maxSearchRadiusPx - searchRadiusBasePx)
         val effectiveSearchRadius = (seed.searchRadiusPx + searchRadiusBoost)
             .coerceIn(searchRadiusBasePx, profile.maxSearchRadiusPx)
-        val geometryMatch = findGeometryMatch(bitmap, seed, predictedCenter, effectiveSearchRadius)
+        val geometryMatch = if (targetProfile == TargetProfile.MARKER && seed.objectSaturation >= 0.28f) {
+            findMarkerMatch(bitmap, seed, predictedCenter, effectiveSearchRadius)
+        } else {
+            findGeometryMatch(bitmap, seed, predictedCenter, effectiveSearchRadius)
+        }
 
         val match = when (mode) {
             ClassicTrackerMode.FAST -> findNativeTemplateMatch(bitmap, seed.template, predictedCenter, effectiveSearchRadius)
             ClassicTrackerMode.ACCURATE -> findTemplateMatch(bitmap, seed.template, predictedCenter, effectiveSearchRadius)
         }
 
-        val templateRejected = match != null && match.second > profile.maxMeanError
-        val templateScore = if (match == null || templateRejected) null else match.second
+        val templateRejected = match != null && match.error > profile.maxMeanError
+        val templateScore = if (match == null || templateRejected) null else match.error
         val templateConfidence = templateScore?.let { score ->
             when (mode) {
                 ClassicTrackerMode.FAST -> (1.0 - (score / 5000.0)).coerceIn(0.0, 1.0)
@@ -106,7 +121,7 @@ class ClassicTrackerEngine(
         } ?: 0.0
 
         val geometryTemplateDistance = if (geometryMatch != null && templateScore != null) {
-            (geometryMatch.center - match!!.first).getDistance()
+            (geometryMatch.center - match!!.center).getDistance()
         } else {
             Float.MAX_VALUE
         }
@@ -128,19 +143,19 @@ class ClassicTrackerEngine(
 
         val acceptedCenter = when {
             useGeometry && templateScore != null && geometryMatch != null -> blendOffset(
-                match!!.first,
+                match!!.center,
                 geometryMatch.center,
                 if (mode == ClassicTrackerMode.ACCURATE) 0.22f else 0.18f
             )
             useGeometry && geometryMatch != null -> geometryMatch.center
             templateScore != null -> when (mode) {
-                ClassicTrackerMode.FAST -> match!!.first
+                ClassicTrackerMode.FAST -> match!!.center
                 ClassicTrackerMode.ACCURATE -> {
                     val templateMatch = match!!
                     when {
-                        templateMatch.second < 10.0 -> templateMatch.first
-                        templateMatch.second < 18.0 -> blendOffset(predictedCenter, templateMatch.first, 0.88f)
-                        else -> blendOffset(predictedCenter, templateMatch.first, 0.72f)
+                        templateMatch.error < 10.0 -> templateMatch.center
+                        templateMatch.error < 18.0 -> blendOffset(predictedCenter, templateMatch.center, 0.88f)
+                        else -> blendOffset(predictedCenter, templateMatch.center, 0.72f)
                     }
                 }
             }
@@ -180,7 +195,18 @@ class ClassicTrackerEngine(
             else -> (seed.searchRadiusPx + 16).coerceAtMost(profile.maxSearchRadiusPx)
         }
 
-        val confidence = maxOf(geometryMatch?.confidence ?: 0.0, templateConfidence)
+        val rawConfidence = maxOf(geometryMatch?.confidence ?: 0.0, templateConfidence)
+        val residual = (anchoredCenter - predictedCenter).getDistance().toDouble()
+        val diagnostics = TrackingDiagnostics(
+            matchScore = rawConfidence,
+            ambiguityRatio = match?.ambiguityRatio,
+            residualPixels = residual,
+            displacementPixels = (anchoredCenter - seed.center).getDistance().toDouble(),
+            searchRadiusPixels = effectiveSearchRadius.toDouble()
+        )
+        val assessment = integrityGate.assess(diagnostics)
+        if (assessment.decision != TrackingDecision.ACCEPT) return null
+        val confidence = assessment.confidence
         val geometrySeed = buildGeometrySeed(bitmap, acceptedCenter)
         val nextSeed = ClassicTrackingSeed(
             template = refreshedTemplate,
@@ -193,6 +219,8 @@ class ClassicTrackerEngine(
             objectLuma = geometrySeed.objectLuma,
             backgroundLuma = geometrySeed.backgroundLuma,
             objectIsBrighter = geometrySeed.objectIsBrighter,
+            objectHue = geometrySeed.objectHue,
+            objectSaturation = geometrySeed.objectSaturation,
             sourceWidth = bitmap.width,
             sourceHeight = bitmap.height
         )
@@ -207,7 +235,10 @@ class ClassicTrackerEngine(
                 useGeometry && templateScore != null -> "hybrid"
                 useGeometry -> "geometry"
                 else -> "template"
-            }
+            },
+            ambiguityRatio = match?.ambiguityRatio,
+            residualErrorPx = residual,
+            diagnostics = diagnostics
         )
     }
 
@@ -216,11 +247,54 @@ class ClassicTrackerEngine(
         val centerY = center.y.toInt().coerceIn(0, bitmap.height - 1)
         val objectLuma = sampleDisk(bitmap, centerX, centerY, lockPatchRadiusPx)
         val backgroundLuma = sampleRing(bitmap, centerX, centerY, lockPatchRadiusPx + 6, lockPatchRadiusPx + 16)
+        val appearance = sampleAppearance(bitmap, centerX, centerY, lockPatchRadiusPx)
         return GeometrySeed(
             objectLuma = objectLuma,
             backgroundLuma = backgroundLuma,
             objectIsBrighter = objectLuma >= backgroundLuma,
-            estimatedRadiusPx = lockPatchRadiusPx.toFloat()
+            estimatedRadiusPx = lockPatchRadiusPx.toFloat(),
+            objectHue = appearance.first,
+            objectSaturation = appearance.second
+        )
+    }
+
+    private fun findMarkerMatch(
+        bitmap: Bitmap,
+        seed: ClassicTrackingSeed,
+        predictedCenter: Offset,
+        searchRadiusPx: Int
+    ): GeometryMatch? {
+        val left = max(0, predictedCenter.x.toInt() - searchRadiusPx)
+        val top = max(0, predictedCenter.y.toInt() - searchRadiusPx)
+        val right = min(bitmap.width - 1, predictedCenter.x.toInt() + searchRadiusPx)
+        val bottom = min(bitmap.height - 1, predictedCenter.y.toInt() + searchRadiusPx)
+        var sumX = 0.0
+        var sumY = 0.0
+        var weightSum = 0.0
+        var count = 0
+        for (y in top..bottom step 2) {
+            for (x in left..right step 2) {
+                val hsv = rgbToHsv(bitmap.getPixel(x, y))
+                val hueDistance = min(abs(hsv.first - seed.objectHue), 1f - abs(hsv.first - seed.objectHue))
+                if (hueDistance <= 0.075f && hsv.second >= max(0.24f, seed.objectSaturation * 0.52f)) {
+                    val weight = ((1f - hueDistance / 0.075f) * hsv.second).toDouble()
+                    sumX += x * weight
+                    sumY += y * weight
+                    weightSum += weight
+                    count++
+                }
+            }
+        }
+        if (count < 5 || weightSum <= 0.0) return null
+        val center = Offset((sumX / weightSum).toFloat(), (sumY / weightSum).toFloat())
+        val residualRatio = ((center - predictedCenter).getDistance() / searchRadiusPx.coerceAtLeast(1)).coerceIn(0f, 1f)
+        val confidence = ((count / 80.0).coerceIn(0.0, 1.0) * 0.55 +
+            (seed.objectSaturation.toDouble().coerceIn(0.0, 1.0)) * 0.45) * (1.0 - residualRatio * 0.35)
+        return GeometryMatch(
+            center = center,
+            confidence = confidence.coerceIn(0.0, 1.0),
+            estimatedRadiusPx = sqrt((count * 4.0 / PI)).toFloat(),
+            errorScore = (1.0 - confidence) * 100.0
         )
     }
 
@@ -327,7 +401,9 @@ class ClassicTrackerEngine(
         val objectLuma: Float,
         val backgroundLuma: Float,
         val objectIsBrighter: Boolean,
-        val estimatedRadiusPx: Float
+        val estimatedRadiusPx: Float,
+        val objectHue: Float,
+        val objectSaturation: Float
     )
 
     private data class GeometryMatch(
@@ -342,6 +418,43 @@ class ClassicTrackerEngine(
         val maxMeanError: Double,
         val templateRefreshThreshold: Double
     )
+}
+
+private fun sampleAppearance(bitmap: Bitmap, centerX: Int, centerY: Int, radius: Int): Pair<Float, Float> {
+    var hueX = 0.0
+    var hueY = 0.0
+    var saturation = 0.0
+    var count = 0
+    for (y in max(0, centerY - radius)..min(bitmap.height - 1, centerY + radius) step 2) {
+        for (x in max(0, centerX - radius)..min(bitmap.width - 1, centerX + radius) step 2) {
+            val hsv = rgbToHsv(bitmap.getPixel(x, y))
+            if (hsv.second < 0.12f) continue
+            hueX += kotlin.math.cos(hsv.first * 2.0 * PI) * hsv.second
+            hueY += kotlin.math.sin(hsv.first * 2.0 * PI) * hsv.second
+            saturation += hsv.second
+            count++
+        }
+    }
+    if (count == 0) return 0f to 0f
+    val angle = kotlin.math.atan2(hueY, hueX)
+    val hue = ((angle / (2.0 * PI) + 1.0) % 1.0).toFloat()
+    return hue to (saturation / count).toFloat()
+}
+
+private fun rgbToHsv(color: Int): Pair<Float, Float> {
+    val r = ((color shr 16) and 0xFF) / 255f
+    val g = ((color shr 8) and 0xFF) / 255f
+    val b = (color and 0xFF) / 255f
+    val maximum = max(r, max(g, b))
+    val minimum = min(r, min(g, b))
+    val delta = maximum - minimum
+    val hue = when {
+        delta == 0f -> 0f
+        maximum == r -> (((g - b) / delta) % 6f) / 6f
+        maximum == g -> (((b - r) / delta) + 2f) / 6f
+        else -> (((r - g) / delta) + 4f) / 6f
+    }.let { if (it < 0f) it + 1f else it }
+    return hue to if (maximum == 0f) 0f else delta / maximum
 }
 
 private fun cropTemplate(bitmap: Bitmap, center: Offset, radiusPx: Int): Bitmap? {
@@ -366,12 +479,21 @@ private fun luma(color: Int): Int {
     return (r * 30 + g * 59 + b * 11) / 100
 }
 
+private data class TemplateMatch(
+    val center: Offset,
+    val error: Double,
+    val secondBestError: Double?
+) {
+    val ambiguityRatio: Double?
+        get() = secondBestError?.let { it / error.coerceAtLeast(1e-6) }
+}
+
 private fun findTemplateMatch(
     bitmap: Bitmap,
     template: Bitmap,
     predictedCenter: Offset,
     searchRadiusPx: Int
-): Pair<Offset, Double>? {
+): TemplateMatch? {
     val templateWidth = template.width
     val templateHeight = template.height
     if (templateWidth <= 0 || templateHeight <= 0) return null
@@ -385,28 +507,55 @@ private fun findTemplateMatch(
 
     val templatePixels = IntArray(templateWidth * templateHeight)
     template.getPixels(templatePixels, 0, templateWidth, 0, 0, templateWidth, templateHeight)
+    val templateSamples = buildList {
+        for (y in 0 until templateHeight step 2) for (x in 0 until templateWidth step 2) {
+            add(luma(templatePixels[y * templateWidth + x]).toDouble())
+        }
+    }
+    val templateMean = templateSamples.average()
+    val templateVariance = templateSamples.sumOf { value -> (value - templateMean) * (value - templateMean) }
     var bestScore = Double.MAX_VALUE
     var bestCenter: Offset? = null
+    val candidates = ArrayList<Pair<Offset, Double>>()
     for (centerY in startY..endY step 2) {
         for (centerX in startX..endX step 2) {
-            var totalDiff = 0.0
-            var samples = 0
+            var sourceSum = 0.0
+            val sourceSamples = DoubleArray(templateSamples.size)
+            var sampleIndex = 0
             for (y in 0 until templateHeight step 2) {
                 for (x in 0 until templateWidth step 2) {
                     val sourceColor = bitmap.getPixel(centerX - halfWidth + x, centerY - halfHeight + y)
-                    val templateColor = templatePixels[y * templateWidth + x]
-                    totalDiff += abs(luma(sourceColor) - luma(templateColor)).toDouble()
-                    samples += 1
+                    val value = luma(sourceColor).toDouble()
+                    sourceSamples[sampleIndex++] = value
+                    sourceSum += value
                 }
             }
-            val meanDiff = totalDiff / samples.coerceAtLeast(1)
-            if (meanDiff < bestScore) {
-                bestScore = meanDiff
+            val sourceMean = sourceSum / sourceSamples.size.coerceAtLeast(1)
+            var numerator = 0.0
+            var sourceVariance = 0.0
+            sourceSamples.indices.forEach { index ->
+                val centeredSource = sourceSamples[index] - sourceMean
+                numerator += (templateSamples[index] - templateMean) * centeredSource
+                sourceVariance += centeredSource * centeredSource
+            }
+            val denominator = sqrt(templateVariance * sourceVariance).coerceAtLeast(1e-9)
+            val correlation = (numerator / denominator).coerceIn(-1.0, 1.0)
+            val error = (1.0 - correlation) * 20.0
+            val center = Offset(centerX.toFloat(), centerY.toFloat())
+            candidates += center to error
+            if (error < bestScore) {
+                bestScore = error
                 bestCenter = Offset(centerX.toFloat(), centerY.toFloat())
             }
         }
     }
-    return bestCenter?.let { it to bestScore }
+    return bestCenter?.let {
+        val exclusionRadius = max(templateWidth, templateHeight).toFloat()
+        val secondBestScore = candidates.asSequence()
+            .filter { (center, _) -> (center - it).getDistance() >= exclusionRadius }
+            .minOfOrNull { (_, error) -> error }
+        TemplateMatch(it, bestScore, secondBestScore)
+    }
 }
 
 private fun findNativeTemplateMatch(
@@ -414,7 +563,7 @@ private fun findNativeTemplateMatch(
     template: Bitmap,
     predictedCenter: Offset,
     searchRadiusPx: Int
-): Pair<Offset, Double>? {
+): TemplateMatch? {
     val framePixels = IntArray(bitmap.width * bitmap.height)
     bitmap.getPixels(framePixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
     val templatePixels = IntArray(template.width * template.height)
@@ -431,7 +580,7 @@ private fun findNativeTemplateMatch(
         searchRadiusPx = searchRadiusPx
     )
     if (result.size < 3) return null
-    return Offset(result[0], result[1]) to result[2].toDouble()
+    return TemplateMatch(Offset(result[0], result[1]), result[2].toDouble(), null)
 }
 
 private fun blendOffset(previous: Offset, next: Offset, factor: Float): Offset =

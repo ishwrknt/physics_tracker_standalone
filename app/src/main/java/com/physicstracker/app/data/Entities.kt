@@ -40,7 +40,10 @@ data class CalibrationEntity(
     // Coordinate System Origin
     val originX: Double,
     val originY: Double,
-    val rotationDegrees: Double = 0.0
+    val rotationDegrees: Double = 0.0,
+    val coordinateSpace: String = "LEGACY_DISPLAY",
+    val sourceWidth: Int? = null,
+    val sourceHeight: Int? = null
 )
 
 @Entity(
@@ -61,5 +64,41 @@ data class TrackPointEntity(
     val trackLabel: String = "A",
     val pixelX: Double,
     val pixelY: Double,
-    val massKg: Double = 1.0 // Default for P2 dynamics
+    val massKg: Double = 1.0, // Default for P2 dynamics
+    val trackerId: String = trackLabel,
+    val requestedTimestampUs: Long? = null,
+    val actualTimestampUs: Long? = null,
+    val sourceWidth: Int? = null,
+    val sourceHeight: Int? = null,
+    val coordinateSpace: String = "SOURCE_VIDEO",
+    val observationKind: String = "MANUAL",
+    val sourceAlgorithm: String = "manual",
+    val confidence: Double? = null,
+    val matchScore: Double? = null,
+    val ambiguity: Double? = null,
+    val residualErrorPx: Double? = null,
+    val refinementMethod: String? = null,
+    val recoveryStatus: String? = null,
+    val isManualCorrection: Boolean = false,
+    val isProtectedKeyframe: Boolean = false
+)
+
+@Entity(
+    tableName = "trackers",
+    indices = [Index(value = ["projectId", "displayOrder"], unique = true)],
+    foreignKeys = [ForeignKey(
+        entity = ProjectEntity::class,
+        parentColumns = ["id"],
+        childColumns = ["projectId"],
+        onDelete = ForeignKey.CASCADE
+    )]
+)
+data class TrackerEntity(
+    @PrimaryKey val id: String,
+    val projectId: Long,
+    val displayName: String,
+    val colorArgb: Long,
+    val displayOrder: Int,
+    val enabled: Boolean = true,
+    val createdAt: Long = System.currentTimeMillis()
 )

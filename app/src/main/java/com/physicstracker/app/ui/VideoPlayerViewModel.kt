@@ -14,6 +14,9 @@ import com.physicstracker.app.data.CalibrationEntity
 import com.physicstracker.app.data.PhysicsRepository
 import com.physicstracker.app.data.TrackPointEntity
 import com.physicstracker.app.data.ProjectEntity
+import com.physicstracker.app.data.TrackerEntity
+import com.physicstracker.app.tracking.VideoTimelineIndex
+import com.physicstracker.app.tracking.VideoTimingInfo
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.delay
@@ -41,6 +44,8 @@ class VideoPlayerViewModel @Inject constructor(
 
     private val _frameDurationMs = MutableStateFlow(33L)
     val frameDurationMs: StateFlow<Long> = _frameDurationMs.asStateFlow()
+    private val _videoTimingInfo = MutableStateFlow(VideoTimingInfo())
+    val videoTimingInfo: StateFlow<VideoTimingInfo> = _videoTimingInfo.asStateFlow()
 
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
@@ -128,6 +133,19 @@ class VideoPlayerViewModel @Inject constructor(
         }
     }
 
+    private data class PointsReplaced(
+        val removed: List<TrackPointEntity>,
+        val added: List<TrackPointEntity>
+    ) : EditAction {
+        override suspend fun undo(viewModel: VideoPlayerViewModel) {
+            viewModel.replacePointsInternal(added, removed)
+        }
+
+        override suspend fun redo(viewModel: VideoPlayerViewModel) {
+            viewModel.replacePointsInternal(removed, added)
+        }
+    }
+
     private data class CalibrationChanged(
         val before: CalibrationEntity?,
         val after: CalibrationEntity?
@@ -170,6 +188,11 @@ class VideoPlayerViewModel @Inject constructor(
             else repository.getCalibrationForProject(id)
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val trackers: StateFlow<List<TrackerEntity>> = _projectId
+        .flatMapLatest { id -> if (id == -1L) flowOf(emptyList()) else repository.getTrackersForProject(id) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val calibrationMetrics: StateFlow<CalibrationMetrics?> = calibration
         .map { current -> if (current == null) null else calibrationMetrics(current) }
@@ -228,6 +251,7 @@ class VideoPlayerViewModel @Inject constructor(
         _lastCheckpointSavedAt.value = project.updatedAt
         currentVideoUri = project.videoUri
         setVideoUri(project.videoUri)
+        ensureInitialTrackers(project.id)
     }
 
     fun createAndLoadProject(uri: String, name: String) {
@@ -241,6 +265,7 @@ class VideoPlayerViewModel @Inject constructor(
             _lastCheckpointSavedAt.value = System.currentTimeMillis()
             currentVideoUri = uri
             setVideoUri(uri)
+            ensureInitialTrackers(newId)
         }
     }
 
@@ -264,7 +289,56 @@ class VideoPlayerViewModel @Inject constructor(
             }
             currentVideoUri = uri
             setVideoUri(uri)
+            ensureInitialTrackers(_projectId.value)
         }
+    }
+
+    private fun ensureInitialTrackers(projectId: Long) {
+        if (projectId == -1L) return
+        viewModelScope.launch {
+            if (repository.getTrackersForProject(projectId).first().isEmpty()) {
+                listOf(
+                    TrackerEntity("$projectId:A", projectId, "A", 0xFF00E676, 0),
+                    TrackerEntity("$projectId:B", projectId, "B", 0xFFFF8870, 1)
+                ).forEach { tracker -> repository.upsertTracker(tracker) }
+            }
+        }
+    }
+
+    fun addTracker(): Boolean {
+        val projectId = _projectId.value
+        val existing = trackers.value
+        if (projectId == -1L || existing.size >= 4) return false
+        val order = (existing.maxOfOrNull { it.displayOrder } ?: -1) + 1
+        val label = ('A'.code + order).toChar().toString()
+        val colors = longArrayOf(0xFF00E676, 0xFFFF8870, 0xFF53B7FF, 0xFFFFD166)
+        viewModelScope.launch {
+            repository.upsertTracker(TrackerEntity("$projectId:$label", projectId, label, colors[order % colors.size], order))
+            touchActiveProject()
+        }
+        return true
+    }
+
+    fun updateTracker(tracker: TrackerEntity, displayName: String, colorArgb: Long) {
+        viewModelScope.launch {
+            repository.upsertTracker(tracker.copy(displayName = displayName.trim().ifEmpty { tracker.displayName }, colorArgb = colorArgb))
+            touchActiveProject()
+        }
+    }
+
+    suspend fun replaceTrackedSegment(
+        trackerId: String,
+        startFrame: Int,
+        endFrame: Int,
+        replacements: List<TrackPointEntity>
+    ) {
+        val projectId = _projectId.value
+        if (projectId == -1L || endFrame < startFrame) return
+        val removed = trackPoints.value.filter {
+            it.trackerId == trackerId && it.frameNumber in startFrame..endFrame
+        }
+        replacePointsInternal(removed, replacements)
+        recordAction(PointsReplaced(removed, replacements))
     }
 
     private fun resetProjectUiState() {
@@ -276,13 +350,21 @@ class VideoPlayerViewModel @Inject constructor(
         _currentPosition.value = 0L
         _duration.value = 0L
         _frameDurationMs.value = 33L
+        _videoTimingInfo.value = VideoTimingInfo()
         _error.value = null
         _lastCheckpointSavedAt.value = null
     }
 
     private fun setVideoUri(uri: String) {
         try {
-            _frameDurationMs.value = VideoFrameTimingHelper.estimateFrameDurationMs(context, uri)
+            _videoTimingInfo.value = VideoTimelineIndex.inspect(context, uri)
+            _frameDurationMs.value = _videoTimingInfo.value.sampleTimesUs.asList()
+                .zipWithNext { left, right -> right - left }
+                .filter { it > 0L }
+                .sorted()
+                .let { deltas -> deltas.getOrNull(deltas.size / 2)?.div(1000L) }
+                ?.coerceAtLeast(1L)
+                ?: VideoFrameTimingHelper.estimateFrameDurationMs(context, uri)
             val parsedUri = android.net.Uri.parse(uri)
             
             val clippingConfig = MediaItem.ClippingConfiguration.Builder()
@@ -480,6 +562,67 @@ class VideoPlayerViewModel @Inject constructor(
         addPointAtInternal(positionMs, x, y, trackLabel, massKg)
     }
 
+    data class ObservationWrite(
+        val requestedPositionMs: Long,
+        val sourceX: Double,
+        val sourceY: Double,
+        val trackLabel: String = "A",
+        val massKg: Double = 1.0,
+        val kind: String = "MEASURED",
+        val algorithm: String,
+        val confidence: Double? = null,
+        val matchScore: Double? = null,
+        val ambiguity: Double? = null,
+        val residualErrorPx: Double? = null,
+        val refinementMethod: String? = null,
+        val recoveryStatus: String? = null,
+        val manualCorrection: Boolean = false,
+        val protectedKeyframe: Boolean = false
+    )
+
+    suspend fun addSourceObservationTracked(write: ObservationWrite) {
+        val id = _projectId.value
+        if (id == -1L) return
+        val requestedUs = (_trimStart.value + write.requestedPositionMs.coerceAtLeast(0L)) * 1000L
+        val identity = _videoTimingInfo.value.nearestFrame(requestedUs)
+        val point = TrackPointEntity(
+            projectId = id,
+            frameNumber = identity.frameNumber,
+            timestampUs = identity.actualTimestampUs ?: requestedUs,
+            trackLabel = write.trackLabel,
+            trackerId = "$id:${write.trackLabel}",
+            massKg = write.massKg,
+            pixelX = write.sourceX,
+            pixelY = write.sourceY,
+            requestedTimestampUs = requestedUs,
+            actualTimestampUs = identity.actualTimestampUs,
+            sourceWidth = _videoTimingInfo.value.width.takeIf { it > 0 },
+            sourceHeight = _videoTimingInfo.value.height.takeIf { it > 0 },
+            coordinateSpace = "SOURCE_VIDEO",
+            observationKind = write.kind,
+            sourceAlgorithm = write.algorithm,
+            confidence = write.confidence,
+            matchScore = write.matchScore,
+            ambiguity = write.ambiguity,
+            residualErrorPx = write.residualErrorPx,
+            refinementMethod = write.refinementMethod,
+            recoveryStatus = write.recoveryStatus,
+            isManualCorrection = write.manualCorrection,
+            isProtectedKeyframe = write.protectedKeyframe
+        )
+        val existing = trackPoints.value.firstOrNull {
+            it.frameNumber == identity.frameNumber && it.trackLabel == write.trackLabel
+        }
+        if (existing != null) {
+            val updated = point.copy(id = existing.id)
+            insertPointInternal(updated)
+            recordAction(PointUpdated(existing, updated))
+        } else {
+            val inserted = insertPointInternal(point)
+            recordAction(PointAdded(inserted))
+        }
+    }
+
     suspend fun addTrackedPointsBatch(
         points: List<TrackedPointWrite>,
         trackLabel: String = "A",
@@ -501,6 +644,24 @@ class VideoPlayerViewModel @Inject constructor(
     fun updatePoint(point: TrackPointEntity, newX: Double, newY: Double) {
         viewModelScope.launch {
             val updatedPoint = point.copy(pixelX = newX, pixelY = newY)
+            if (updatedPoint == point) return@launch
+            insertPointInternal(updatedPoint)
+            recordAction(PointUpdated(point, updatedPoint))
+        }
+    }
+
+    fun updateSourcePoint(point: TrackPointEntity, sourceX: Double, sourceY: Double) {
+        viewModelScope.launch {
+            val updatedPoint = point.copy(
+                pixelX = sourceX,
+                pixelY = sourceY,
+                coordinateSpace = "SOURCE_VIDEO",
+                observationKind = "MANUAL",
+                sourceAlgorithm = "manual-correction",
+                confidence = 1.0,
+                isManualCorrection = true,
+                isProtectedKeyframe = true
+            )
             if (updatedPoint == point) return@launch
             insertPointInternal(updatedPoint)
             recordAction(PointUpdated(point, updatedPoint))
@@ -632,7 +793,12 @@ class VideoPlayerViewModel @Inject constructor(
             trackLabel = trackLabel,
             massKg = massKg,
             pixelX = x,
-            pixelY = y
+            pixelY = y,
+            trackerId = "$id:$trackLabel",
+            requestedTimestampUs = (_trimStart.value + clampedPositionMs) * 1000L,
+            coordinateSpace = "LEGACY_DISPLAY",
+            observationKind = "MANUAL",
+            sourceAlgorithm = "legacy-ui"
         )
         val existingPoint = trackPoints.value.firstOrNull { it.frameNumber == frameNumber && it.trackLabel == trackLabel }
         if (existingPoint != null) {
@@ -661,6 +827,12 @@ class VideoPlayerViewModel @Inject constructor(
 
     private suspend fun restorePointsInternal(points: List<TrackPointEntity>) {
         points.forEach { repository.insertPoint(it) }
+        touchActiveProject()
+    }
+
+    private suspend fun replacePointsInternal(remove: List<TrackPointEntity>, add: List<TrackPointEntity>) {
+        remove.forEach { repository.deletePoint(it.id) }
+        add.forEach { repository.insertPoint(it) }
         touchActiveProject()
     }
 

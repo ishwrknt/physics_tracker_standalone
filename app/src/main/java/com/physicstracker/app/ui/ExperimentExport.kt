@@ -309,6 +309,7 @@ private fun buildAuditLog(
         add("android_version=${Build.VERSION.RELEASE}")
         add("display_unit=$displayedUnit")
         add("sample_count=${points.size}")
+        add("data_representation=${points.firstOrNull()?.dataRepresentation ?: "RAW"}")
         add("trim_start_ms=$trimStartMs")
         add("last_checkpoint_saved_at=${formatAuditTimestamp(lastCheckpointSavedAt)}")
         add("selected_series=${selectedSeries.name}")
@@ -405,6 +406,17 @@ private fun buildExcelXml(
         "track",
         "frame",
         "time_s",
+        "tracker_id",
+        "data_representation",
+        "observation_kind",
+        "source_algorithm",
+        "confidence",
+        "requested_timestamp_us",
+        "actual_timestamp_us",
+        "coordinate_space",
+        "ambiguity",
+        "residual_error_px",
+        "manual_correction",
         "gap",
         "x_$displayedUnit",
         "y_$displayedUnit",
@@ -472,6 +484,17 @@ private fun buildExcelXml(
             point.trackLabel,
             point.frameNumber.toString(),
             formatSeconds(point.timestampUs),
+            point.trackerId,
+            point.dataRepresentation,
+            point.observationKind,
+            point.sourceAlgorithm,
+            point.confidence?.let(::formatCalibratedValue) ?: "",
+            point.requestedTimestampUs?.toString() ?: "",
+            point.actualTimestampUs?.toString() ?: "",
+            point.coordinateSpace,
+            point.ambiguity?.let(::formatCalibratedValue) ?: "",
+            point.residualErrorPx?.let(::formatCalibratedValue) ?: "",
+            point.manualCorrection.toString(),
             point.gapLabel ?: "",
             formatCalibratedValue(point.xValue),
             formatCalibratedValue(point.yValue),
@@ -979,7 +1002,7 @@ private fun appendDataPages(
         isFakeBoldText = true
         isAntiAlias = true
     }
-    val headers = "Track   Frame   Time(s)   X($displayedUnit)   Y($displayedUnit)   Speed   Accel"
+    val headers = "Track   Frame   Time(s)   X($displayedUnit)   Y($displayedUnit)   Speed   Kind/Confidence"
     points.chunked(60).forEachIndexed { index, chunk ->
         val pageInfo = PdfDocument.PageInfo.Builder(1240, 1754, 100 + index).create()
         val page = document.startPage(pageInfo)
@@ -1009,7 +1032,9 @@ private fun appendDataPages(
                 append(" ")
                 append(formatOptionalCalibratedValue(point.speedValue).padEnd(8))
                 append(" ")
-                append(formatOptionalCalibratedValue(point.accelerationValue))
+                append(point.observationKind.take(6))
+                append("/")
+                append(point.confidence?.let { String.format(Locale.US, "%.2f", it) } ?: "--")
             }
             canvas.drawText(row.take(130), 40f, y, bodyPaint)
             y += 18f

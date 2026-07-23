@@ -1,0 +1,38 @@
+{
+  "video": "example_video.mp4",
+  "annotation_method": "HSV red/pink connected-component centroid with temporal continuity; missing targets are unlabelled",
+  "frame_count": 190,
+  "timestamp_irregularity_detected": true,
+  "baseline": {
+    "labelled_frames": 190,
+    "measured_frames": 190,
+    "mean_error_px": 88.7693891118434,
+    "median_error_px": 16.653019132366246,
+    "p95_error_px": 247.01275551859442,
+    "max_error_px": 247.92577260281578,
+    "false_lock_count": 90,
+    "tracking_loss_rate": 0.0,
+    "time_per_frame_ms": 0.11710566653323079,
+    "pause_count": 0
+  },
+  "candidate": {
+    "labelled_frames": 190,
+    "measured_frames": 186,
+    "mean_error_px": 2.3429083170111027,
+    "median_error_px": 1.0054688235920406,
+    "p95_error_px": 9.547259910750052,
+    "max_error_px": 15.21439294923242,
+    "false_lock_count": 0,
+    "tracking_loss_rate": 0.021052631578947368,
+    "time_per_frame_ms": 2.61596887817153,
+    "pause_count": 4
+  },
+  "representative_failure_frames": [
+    "docs/benchmark_artifacts/failure_frame_100.png",
+    "docs/benchmark_artifacts/failure_frame_101.png",
+    "docs/benchmark_artifacts/failure_frame_102.png",
+    "docs/benchmark_artifacts/failure_frame_103.png",
+    "docs/benchmark_artifacts/failure_frame_104.png",
+    "docs/benchmark_artifacts/failure_frame_105.png"
+  ]
+}
