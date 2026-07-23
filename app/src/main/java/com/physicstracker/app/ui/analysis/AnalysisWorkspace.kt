@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -46,6 +47,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -61,6 +63,7 @@ import com.physicstracker.app.ui.PhysicsColorSurfaceVariant
 import com.physicstracker.app.ui.PhysicsColorTrackA
 import com.physicstracker.app.ui.PhysicsColorTrackB
 import java.util.Locale
+import kotlin.math.roundToInt
 
 @Composable
 fun AnalysisWorkspace(
@@ -69,10 +72,14 @@ fun AnalysisWorkspace(
     fullGraphVisible: Boolean,
     onFullGraphVisibleChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    controlContent: @Composable () -> Unit = {},
     graphContent: @Composable () -> Unit
 ) {
     var panelWidthFraction by rememberSaveable { mutableFloatStateOf(0.32f) }
     var tableHeightFraction by rememberSaveable { mutableFloatStateOf(0.26f) }
+    var floatingGraphVisible by rememberSaveable { mutableStateOf(true) }
+    var floatingGraphOffsetX by rememberSaveable { mutableFloatStateOf(18f) }
+    var floatingGraphOffsetY by rememberSaveable { mutableFloatStateOf(58f) }
     val modules = remember { DefaultAnalysisModules }
     val statistics = remember(state.rows) { buildAnalysisStatistics(state.rows) }
     val motion = remember(state.rows) { buildAnalysisMotionSummary(state.rows) }
@@ -143,9 +150,9 @@ fun AnalysisWorkspace(
                                         .weight(1f)
                                         .fillMaxWidth()
                                         .border(1.dp, PhysicsColorDivider, RoundedCornerShape(8.dp))
-                                        .background(Color.Black.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
+                                        .background(PhysicsColorSurface.copy(alpha = 0.72f), RoundedCornerShape(8.dp))
                                 ) {
-                                    graphContent()
+                                    controlContent()
                                 }
                                 AnalysisModeBar(
                                     modules = modules,
@@ -187,6 +194,78 @@ fun AnalysisWorkspace(
                     }
                 }
             }
+            }
+            if (floatingGraphVisible) {
+                Surface(
+                    color = Color.Black.copy(alpha = 0.94f),
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, PhysicsColorPrimary.copy(alpha = 0.65f)),
+                    shadowElevation = 10.dp,
+                    modifier = Modifier
+                        .offset {
+                            IntOffset(
+                                floatingGraphOffsetX.roundToInt(),
+                                floatingGraphOffsetY.roundToInt()
+                            )
+                        }
+                        .width(400.dp)
+                        .height(250.dp)
+                        .zIndex(15f)
+                ) {
+                    Column {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(36.dp)
+                                .background(PhysicsColorSurfaceVariant)
+                                .pointerInput(Unit) {
+                                    detectDragGestures { change, dragAmount ->
+                                        change.consume()
+                                        floatingGraphOffsetX =
+                                            (floatingGraphOffsetX + dragAmount.x).coerceAtLeast(0f)
+                                        floatingGraphOffsetY =
+                                            (floatingGraphOffsetY + dragAmount.y).coerceAtLeast(0f)
+                                    }
+                                }
+                                .padding(start = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                "GRAPH",
+                                color = PhysicsColorPrimary,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            TextButton(
+                                onClick = { floatingGraphVisible = false },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+                            ) {
+                                Text("HIDE", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            graphContent()
+                        }
+                    }
+                }
+            } else {
+                OutlinedButton(
+                    onClick = { floatingGraphVisible = true },
+                    border = BorderStroke(1.dp, PhysicsColorPrimary),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = Color.Black.copy(alpha = 0.82f),
+                        contentColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 7.dp),
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(12.dp)
+                        .zIndex(20f)
+                ) {
+                    Text("GRAPH", style = MaterialTheme.typography.labelSmall)
+                }
             }
             OutlinedButton(
                 onClick = state.onExitFullScreen,

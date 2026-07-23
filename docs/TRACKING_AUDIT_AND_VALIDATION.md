@@ -72,7 +72,9 @@ The candidate produced zero false locks in every current scenario. In the delibe
 
 ## Known limitations and next validation gates
 
-- Planned Analysis workspace phase: move the graph into a user-controlled floating window and reclaim the fixed graph area for a dedicated tracking ROI panel. The panel must edit the real tracker template/ROI (position, width, height, handles, reset, and lock), provide a live preview, and remain touch-friendly. This is a recorded requirement, not an implemented capability.
+- The Analysis graph now opens in a draggable, hideable floating window. Its former fixed area is a dedicated tracking ROI panel with live preview, source-pixel X/Y/width/height readout, joystick movement, size controls, reset, and lock/unlock.
+- The video overlay exposes draggable ROI corner, edge, and body handles. ROI position and dimensions are stored independently for Track A and Track B and define the rectangular template used by the classic tracker and fallback seeding paths.
+- ROI rotation is intentionally not exposed because the current matching engines do not implement a scientifically valid rotated template. Deep and MediaPipe engines use the ROI center for their model seed while the rectangular ROI remains the fallback appearance template.
 - The exact Android decoding and tracker loop must be exercised on representative physical devices; `MediaMetadataRetriever` does not expose the returned bitmap PTS, so persisted `actualTimestampUs` is the extractor PTS selected for the request, not a decoder-reported bitmap timestamp.
 - Camera-motion detection/compensation is not yet enabled in the production engine. The timestamp/status infrastructure and synthetic cases exist, but device-quality background feature estimation remains a validation gate.
 - Persistent tracker management supports four tracker identities, but the current workspace still exposes the established A/B interaction and comparison UI. C/D editor, graph selection, and simultaneous device performance remain a product/UI gate.

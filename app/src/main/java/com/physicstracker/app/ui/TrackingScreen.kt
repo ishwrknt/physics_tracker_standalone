@@ -282,6 +282,15 @@ private data class MeasurementStickDraft(
     val end: Offset
 )
 
+private data class TrackingRoi(
+    val center: Offset,
+    val widthPx: Float = 32f,
+    val heightPx: Float = 32f,
+    val locked: Boolean = false
+)
+
+private enum class TrackingRoiHandle { BODY, LEFT, RIGHT, TOP, BOTTOM, TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT }
+
 private data class AutoTrackSeed(
     val template: Bitmap,
     val originalTemplate: Bitmap? = null,
@@ -959,6 +968,14 @@ private fun cropTemplateSized(bitmap: Bitmap, center: Offset, sizePx: Int): Bitm
     val top = center.y.toInt() - (sizePx / 2)
     if (left < 0 || top < 0 || left + sizePx > bitmap.width || top + sizePx > bitmap.height) return null
     return Bitmap.createBitmap(bitmap, left, top, sizePx, sizePx)
+}
+
+private fun cropTemplateRect(bitmap: Bitmap, center: Offset, widthPx: Int, heightPx: Int): Bitmap? {
+    val width = widthPx.coerceIn(8, bitmap.width)
+    val height = heightPx.coerceIn(8, bitmap.height)
+    val left = (center.x.toInt() - width / 2).coerceIn(0, bitmap.width - width)
+    val top = (center.y.toInt() - height / 2).coerceIn(0, bitmap.height - height)
+    return Bitmap.createBitmap(bitmap, left, top, width, height)
 }
 
 private fun luma(color: Int): Int {
@@ -2067,6 +2084,10 @@ fun TrackingScreen(
     var autoTrackSeed by remember { mutableStateOf<AutoTrackSeed?>(null) }
     var autoTrackSeedA by remember { mutableStateOf<AutoTrackSeed?>(null) }
     var autoTrackSeedB by remember { mutableStateOf<AutoTrackSeed?>(null) }
+    var trackingRoi by remember { mutableStateOf<TrackingRoi?>(null) }
+    var trackingRoiA by remember { mutableStateOf<TrackingRoi?>(null) }
+    var trackingRoiB by remember { mutableStateOf<TrackingRoi?>(null) }
+    var draggedTrackingRoiHandle by remember { mutableStateOf<TrackingRoiHandle?>(null) }
     var pendingSeedScreenPointA by remember { mutableStateOf<Offset?>(null) }
     var pendingSeedScreenPointB by remember { mutableStateOf<Offset?>(null) }
     var autoTrackAwaitingSeedA by rememberSaveable { mutableStateOf(false) }
@@ -2250,12 +2271,14 @@ fun TrackingScreen(
         when (activeTrack) {
             ActiveTrack.A -> {
                 autoTrackSeedA = autoTrackSeed
+                trackingRoiA = trackingRoi
                 pendingSeedScreenPointA = pendingSeedScreenPoint
                 autoTrackAwaitingSeedA = autoTrackAwaitingSeed
                 autoTrackSelectionModeA = autoTrackSelectionMode
             }
             ActiveTrack.B -> {
                 autoTrackSeedB = autoTrackSeed
+                trackingRoiB = trackingRoi
                 pendingSeedScreenPointB = pendingSeedScreenPoint
                 autoTrackAwaitingSeedB = autoTrackAwaitingSeed
                 autoTrackSelectionModeB = autoTrackSelectionMode
@@ -2267,6 +2290,7 @@ fun TrackingScreen(
         when (activeTrack) {
             ActiveTrack.A -> {
                 autoTrackSeed = autoTrackSeedA
+                trackingRoi = trackingRoiA
                 pendingSeedScreenPoint = pendingSeedScreenPointA
                 autoTrackAwaitingSeed = autoTrackAwaitingSeedA
                 autoTrackSelectionMode = autoTrackSelectionModeA
@@ -2274,6 +2298,7 @@ fun TrackingScreen(
             }
             ActiveTrack.B -> {
                 autoTrackSeed = autoTrackSeedB
+                trackingRoi = trackingRoiB
                 pendingSeedScreenPoint = pendingSeedScreenPointB
                 autoTrackAwaitingSeed = autoTrackAwaitingSeedB
                 autoTrackSelectionMode = autoTrackSelectionModeB
@@ -2286,6 +2311,7 @@ fun TrackingScreen(
             saveCurrentTrackAutoState()
         } else {
             autoTrackSeedA = autoTrackSeed
+            trackingRoiA = trackingRoi
             pendingSeedScreenPointA = pendingSeedScreenPoint
             autoTrackAwaitingSeedA = autoTrackAwaitingSeed
             autoTrackSelectionModeA = autoTrackSelectionMode
@@ -2298,6 +2324,7 @@ fun TrackingScreen(
         draggedPointDraft = null
         if (multiTrackEnabled) {
             autoTrackSeedB = null
+            trackingRoiB = null
             pendingSeedScreenPointB = null
             autoTrackAwaitingSeedB = false
             autoTrackSelectionModeB = false
@@ -3345,6 +3372,38 @@ fun TrackingScreen(
         }
     }
     val canConfirmPrecisionTarget = pendingSeedScreenPoint != null || manualPendingPoint != null || selectedPointId != -1L
+    fun sourcePointForScreen(point: Offset): Offset =
+        if (sourceVideoSize.width > 0 && sourceVideoSize.height > 0 && canvasSize != IntSize.Zero) {
+            screenToVideoOffsetClamped(point, sourceVideoSize.width, sourceVideoSize.height, canvasSize)
+        } else point
+    fun screenPointForSource(point: Offset): Offset =
+        if (sourceVideoSize.width > 0 && sourceVideoSize.height > 0 && canvasSize != IntSize.Zero) {
+            videoToScreenOffset(point, sourceVideoSize.width, sourceVideoSize.height, canvasSize)
+        } else point
+    fun ensureTrackingRoi(screenCenter: Offset): TrackingRoi {
+        val sourceCenter = sourcePointForScreen(screenCenter)
+        return trackingRoi?.copy(center = sourceCenter) ?: TrackingRoi(center = sourceCenter)
+    }
+    fun updateTrackingRoiCenter(screenCenter: Offset) {
+        trackingRoi = ensureTrackingRoi(screenCenter)
+        pendingSeedScreenPoint = screenCenter
+        if (twoTrackMode) saveCurrentTrackAutoState()
+    }
+    fun updateTrackingRoi(transform: (TrackingRoi) -> TrackingRoi) {
+        val current = trackingRoi ?: pendingSeedScreenPoint?.let(::ensureTrackingRoi) ?: return
+        if (current.locked) return
+        val updated = transform(current)
+        trackingRoi = updated.copy(
+            center = Offset(
+                updated.center.x.coerceIn(0f, (sourceVideoSize.width - 1).coerceAtLeast(1).toFloat()),
+                updated.center.y.coerceIn(0f, (sourceVideoSize.height - 1).coerceAtLeast(1).toFloat())
+            ),
+            widthPx = updated.widthPx.coerceIn(8f, sourceVideoSize.width.coerceAtLeast(8).toFloat()),
+            heightPx = updated.heightPx.coerceIn(8f, sourceVideoSize.height.coerceAtLeast(8).toFloat())
+        )
+        pendingSeedScreenPoint = trackingRoi?.center?.let(::screenPointForSource)
+        if (twoTrackMode) saveCurrentTrackAutoState()
+    }
     val auxiliaryPrecisionPoint = when (val target = auxiliaryPrecisionTarget) {
         is AuxiliaryPrecisionTarget.Calibration -> {
             val current = displayedCalibration
@@ -3408,6 +3467,7 @@ fun TrackingScreen(
             return
         }
         val frameTimeUs = absoluteCurrentPos * 1000L
+        val roiSnapshot = trackingRoi
         val seedResult = withContext(Dispatchers.IO) {
             runCatching {
                 MediaMetadataRetriever().use { retriever ->
@@ -3421,11 +3481,20 @@ fun TrackingScreen(
                         val resolvedMode = if (targetProfile == TargetProfile.ROBUST || effectiveTrackingQuality == TrackingQuality.PRECISE) {
                             ClassicTrackerMode.ACCURATE
                         } else mode
-                        ClassicTrackerEngine(resolvedMode, effectiveTrackingQuality, targetProfile, effectiveRecoveryPolicy).seed(bitmap, videoTarget)
+                        ClassicTrackerEngine(resolvedMode, effectiveTrackingQuality, targetProfile, effectiveRecoveryPolicy).seed(
+                            bitmap,
+                            videoTarget,
+                            roiSnapshot?.widthPx?.roundToInt(),
+                            roiSnapshot?.heightPx?.roundToInt()
+                        )
                     }
                     val template = classicSeed?.template ?: when (autoTrackMode) {
-                        AutoTrackMode.CLASSIC_FAST -> cropTemplateSized(bitmap, videoTarget, autoTrackTemplateSizePx)
-                        else -> cropTemplate(bitmap, videoTarget, autoTrackTemplateRadiusPx)
+                        AutoTrackMode.CLASSIC_FAST -> roiSnapshot?.let {
+                            cropTemplateRect(bitmap, videoTarget, it.widthPx.roundToInt(), it.heightPx.roundToInt())
+                        } ?: cropTemplateSized(bitmap, videoTarget, autoTrackTemplateSizePx)
+                        else -> roiSnapshot?.let {
+                            cropTemplateRect(bitmap, videoTarget, it.widthPx.roundToInt(), it.heightPx.roundToInt())
+                        } ?: cropTemplate(bitmap, videoTarget, autoTrackTemplateRadiusPx)
                     } ?: return@runCatching null
                     val deepState = if (autoTrackMode == AutoTrackMode.DEEP_ACCURATE && deepTrackingSupport.isModelReady) {
                         DeepSegmentationTracker(context, deepTrackingSupport).use { tracker ->
@@ -3661,8 +3730,7 @@ fun TrackingScreen(
         showMagnifier = true
         when {
             pendingSeedScreenPoint != null -> {
-                pendingSeedScreenPoint = moveBySourcePixels(pendingSeedScreenPoint ?: return)
-                if (twoTrackMode) saveCurrentTrackAutoState()
+                updateTrackingRoiCenter(moveBySourcePixels(pendingSeedScreenPoint ?: return))
                 autoTrackStatus = null
             }
             manualPendingPoint != null && selectedPointId == -1L -> {
@@ -4490,6 +4558,7 @@ fun TrackingScreen(
                     autoTrackEnabled,
                     autoTrackSelectionMode,
                     autoTrackAwaitingSeed,
+                    trackingRoi,
                     analysisMode,
                     disableExistingPointSelection,
                     videoScale,
@@ -4525,8 +4594,7 @@ fun TrackingScreen(
                             ) return@detectTapGestures
                             if (trackMode && autoTrackEnabled) {
                                 if (autoTrackSelectionMode || autoTrackAwaitingSeed) {
-                                    pendingSeedScreenPoint = selectionPointFromTouch(overlayOffset, canvasSize, autoSelectTouchOffsetPx)
-                                    if (twoTrackMode) saveCurrentTrackAutoState()
+                                    updateTrackingRoiCenter(selectionPointFromTouch(overlayOffset, canvasSize, autoSelectTouchOffsetPx))
                                 }
                                 selectedPointId = -1L
                                 manualPendingPoint = null
@@ -4574,8 +4642,7 @@ fun TrackingScreen(
                                 )
                             ) return@detectTapGestures
                             if (trackMode && autoTrackEnabled && (autoTrackSelectionMode || autoTrackAwaitingSeed)) {
-                                pendingSeedScreenPoint = selectionPointFromTouch(overlayOffset, canvasSize, autoSelectTouchOffsetPx)
-                                if (twoTrackMode) saveCurrentTrackAutoState()
+                                updateTrackingRoiCenter(selectionPointFromTouch(overlayOffset, canvasSize, autoSelectTouchOffsetPx))
                                 return@detectTapGestures
                             }
                             if (trackMode && autoTrackEnabled && autoTrackSeed != null && !autoTrackRunning) {
@@ -4670,10 +4737,42 @@ fun TrackingScreen(
                                 }
                                 return@detectDragGestures
                             }
+                            if (trackMode && autoTrackEnabled && trackingRoi?.locked == false) {
+                                val roi = trackingRoi ?: return@detectDragGestures
+                                val center = screenPointForSource(roi.center)
+                                val videoRect = videoDisplayRect(
+                                    sourceVideoSize.width.coerceAtLeast(1),
+                                    sourceVideoSize.height.coerceAtLeast(1),
+                                    canvasSize
+                                )
+                                val width = roi.widthPx * videoRect.width() / sourceVideoSize.width.coerceAtLeast(1)
+                                val height = roi.heightPx * videoRect.height() / sourceVideoSize.height.coerceAtLeast(1)
+                                val left = center.x - width / 2f
+                                val right = center.x + width / 2f
+                                val top = center.y - height / 2f
+                                val bottom = center.y + height / 2f
+                                val candidates = listOf(
+                                    TrackingRoiHandle.TOP_LEFT to Offset(left, top),
+                                    TrackingRoiHandle.TOP to Offset(center.x, top),
+                                    TrackingRoiHandle.TOP_RIGHT to Offset(right, top),
+                                    TrackingRoiHandle.LEFT to Offset(left, center.y),
+                                    TrackingRoiHandle.RIGHT to Offset(right, center.y),
+                                    TrackingRoiHandle.BOTTOM_LEFT to Offset(left, bottom),
+                                    TrackingRoiHandle.BOTTOM to Offset(center.x, bottom),
+                                    TrackingRoiHandle.BOTTOM_RIGHT to Offset(right, bottom)
+                                )
+                                draggedTrackingRoiHandle = candidates.minByOrNull { distanceBetween(overlayOffset, it.second) }
+                                    ?.takeIf { distanceBetween(overlayOffset, it.second) <= 28f * density }
+                                    ?.first
+                                    ?: TrackingRoiHandle.BODY.takeIf {
+                                        overlayOffset.x in left..right && overlayOffset.y in top..bottom
+                                    }
+                                if (draggedTrackingRoiHandle != null) return@detectDragGestures
+                            }
                             if (trackMode && autoTrackEnabled && (autoTrackSelectionMode || autoTrackAwaitingSeed)) {
                                 val resolvedPoint = pendingSeedScreenPoint
                                     ?: selectionPointFromTouch(overlayOffset, canvasSize, autoSelectTouchOffsetPx)
-                                pendingSeedScreenPoint = resolvedPoint
+                                updateTrackingRoiCenter(resolvedPoint)
                                 val handleCenter = autoSeedHandleCenter(resolvedPoint, canvasSize, autoSeedHandleLiftPx)
                                 val handleHit = distanceBetween(overlayOffset, handleCenter) <= 36f * density
                                 val pointHit = distanceBetween(overlayOffset, resolvedPoint) <= 30f * density
@@ -4812,6 +4911,7 @@ fun TrackingScreen(
                                 }
                             }
                             draggedCalibrationHandle = null
+                            draggedTrackingRoiHandle = null
                             draggedPhotogateHandle = null
                             draggedPointDraft = null
                             draggedPointTouchDelta = null
@@ -4824,6 +4924,7 @@ fun TrackingScreen(
                             lightDragHandle = null
                             lightDragSlot = null
                             draggedCalibrationHandle = null
+                            draggedTrackingRoiHandle = null
                             draggedPhotogateHandle = null
                             draggedPointDraft = null
                             draggedPointTouchDelta = null
@@ -4849,16 +4950,52 @@ fun TrackingScreen(
                             return@detectDragGestures
                         }
                         val currentCalibration = calibrationDraft ?: displayedCalibration
-                        if (trackMode && autoTrackEnabled && (autoTrackSelectionMode || autoTrackAwaitingSeed)) {
+                        if (draggedTrackingRoiHandle != null) {
+                            change.consume()
+                            val videoRect = videoDisplayRect(
+                                sourceVideoSize.width.coerceAtLeast(1),
+                                sourceVideoSize.height.coerceAtLeast(1),
+                                canvasSize
+                            )
+                            val sourceDelta = Offset(
+                                dragAmount.x * sourceVideoSize.width.coerceAtLeast(1) / videoRect.width().coerceAtLeast(1),
+                                dragAmount.y * sourceVideoSize.height.coerceAtLeast(1) / videoRect.height().coerceAtLeast(1)
+                            )
+                            val handle = draggedTrackingRoiHandle ?: return@detectDragGestures
+                            updateTrackingRoi { roi ->
+                                var center = roi.center
+                                var width = roi.widthPx
+                                var height = roi.heightPx
+                                when (handle) {
+                                    TrackingRoiHandle.BODY -> center += sourceDelta
+                                    TrackingRoiHandle.LEFT -> { center += Offset(sourceDelta.x / 2f, 0f); width -= sourceDelta.x }
+                                    TrackingRoiHandle.RIGHT -> { center += Offset(sourceDelta.x / 2f, 0f); width += sourceDelta.x }
+                                    TrackingRoiHandle.TOP -> { center += Offset(0f, sourceDelta.y / 2f); height -= sourceDelta.y }
+                                    TrackingRoiHandle.BOTTOM -> { center += Offset(0f, sourceDelta.y / 2f); height += sourceDelta.y }
+                                    TrackingRoiHandle.TOP_LEFT -> {
+                                        center += sourceDelta / 2f; width -= sourceDelta.x; height -= sourceDelta.y
+                                    }
+                                    TrackingRoiHandle.TOP_RIGHT -> {
+                                        center += sourceDelta / 2f; width += sourceDelta.x; height -= sourceDelta.y
+                                    }
+                                    TrackingRoiHandle.BOTTOM_LEFT -> {
+                                        center += sourceDelta / 2f; width -= sourceDelta.x; height += sourceDelta.y
+                                    }
+                                    TrackingRoiHandle.BOTTOM_RIGHT -> {
+                                        center += sourceDelta / 2f; width += sourceDelta.x; height += sourceDelta.y
+                                    }
+                                }
+                                roi.copy(center = center, widthPx = width, heightPx = height)
+                            }
+                        } else if (trackMode && autoTrackEnabled && (autoTrackSelectionMode || autoTrackAwaitingSeed)) {
                             change.consume()
                             val dragDelta = pendingSeedTouchDelta ?: Offset.Zero
                             val maxX = canvasSize.width.toFloat().coerceAtLeast(1f)
                             val maxY = canvasSize.height.toFloat().coerceAtLeast(1f)
-                            pendingSeedScreenPoint = Offset(
+                            updateTrackingRoiCenter(Offset(
                                 (overlayPosition.x + dragDelta.x).coerceIn(0f, maxX),
                                 (overlayPosition.y + dragDelta.y).coerceIn(0f, maxY)
-                            )
-                            if (twoTrackMode) saveCurrentTrackAutoState()
+                            ))
                         } else if (draggedPhotogateHandle != null) {
                             change.consume()
                             val fraction = (overlayPosition.x / canvasSize.width.toFloat().coerceAtLeast(1f)).coerceIn(0.05f, 0.95f)
@@ -5260,6 +5397,32 @@ fun TrackingScreen(
                         Offset(handleCenter.x, handleCenter.y + 5.dp.toPx()),
                         1.dp.toPx()
                     )
+                }
+                trackingRoi?.let { roi ->
+                    if (autoTrackEnabled) {
+                        val center = screenPointForSource(roi.center)
+                        val videoRect = videoDisplayRect(
+                            sourceVideoSize.width.coerceAtLeast(1),
+                            sourceVideoSize.height.coerceAtLeast(1),
+                            canvasSize
+                        )
+                        val width = roi.widthPx * videoRect.width() / sourceVideoSize.width.coerceAtLeast(1)
+                        val height = roi.heightPx * videoRect.height() / sourceVideoSize.height.coerceAtLeast(1)
+                        val left = center.x - width / 2f
+                        val top = center.y - height / 2f
+                        val color = if (roi.locked) LabGold else LabAccent
+                        drawRect(color.copy(alpha = 0.10f), Offset(left, top), Size(width, height), style = Fill)
+                        drawRect(color, Offset(left, top), Size(width, height), style = Stroke(width = 2.dp.toPx()))
+                        val handles = listOf(
+                            Offset(left, top), Offset(center.x, top), Offset(left + width, top),
+                            Offset(left, center.y), Offset(left + width, center.y),
+                            Offset(left, top + height), Offset(center.x, top + height), Offset(left + width, top + height)
+                        )
+                        handles.forEach { handle ->
+                            drawCircle(Color.Black.copy(alpha = 0.75f), 7.dp.toPx(), handle, style = Fill)
+                            drawCircle(color, 7.dp.toPx(), handle, style = Stroke(width = 2.dp.toPx()))
+                        }
+                    }
                 }
                 autoTrackSeed?.let { seed ->
                     val center = videoToScreenOffset(seed.center, seed.sourceWidth, seed.sourceHeight, canvasSize)
@@ -6000,12 +6163,13 @@ fun TrackingScreen(
                                         autoTrackAwaitingSeed = true
                                         autoTrackRunning = false
                                         liveAutoTrackPreview.clear()
-                                        pendingSeedScreenPoint = autoTrackSeed?.let {
+                                        val initialPoint = autoTrackSeed?.let {
                                             videoToScreenOffset(it.center, it.sourceWidth, it.sourceHeight, canvasSize)
                                         } ?: pendingSeedScreenPoint ?: Offset(
                                             canvasSize.width.coerceAtLeast(1) / 2f,
                                             canvasSize.height.coerceAtLeast(1) / 2f
                                         )
+                                        updateTrackingRoiCenter(initialPoint)
                                         pendingSeedTouchDelta = Offset.Zero
                                         if (twoTrackMode) saveCurrentTrackAutoState()
                                     },
@@ -6704,7 +6868,49 @@ fun TrackingScreen(
             lightTimeSeriesD = lightTimeSeriesD.toList(),
             onClearLightTimeSeries = ::clearLightTimeSeries,
             graphFullScreen = graphFullScreen,
-            onGraphFullScreenChange = { graphFullScreen = it }
+            onGraphFullScreenChange = { graphFullScreen = it },
+            analysisTrackingControls = {
+                TrackingRoiControlPanel(
+                    roi = trackingRoi,
+                    previewBitmap = magnifierBitmap,
+                    activeTrack = activeTrack,
+                    stepPx = seedNudgeStepPx,
+                    onStepChange = { seedNudgeStepPx = it },
+                    onMove = { dx, dy ->
+                        updateTrackingRoi { roi ->
+                            roi.copy(center = roi.center + Offset(dx, dy))
+                        }
+                    },
+                    onResize = { widthDelta, heightDelta ->
+                        updateTrackingRoi { roi ->
+                            roi.copy(
+                                widthPx = roi.widthPx + widthDelta,
+                                heightPx = roi.heightPx + heightDelta
+                            )
+                        }
+                    },
+                    onReset = {
+                        val center = trackingRoi?.center
+                            ?: pendingSeedScreenPoint?.let(::sourcePointForScreen)
+                            ?: Offset(
+                                sourceVideoSize.width.coerceAtLeast(1) / 2f,
+                                sourceVideoSize.height.coerceAtLeast(1) / 2f
+                            )
+                        trackingRoi = TrackingRoi(center = center)
+                        saveCurrentTrackAutoState()
+                    },
+                    onToggleLock = {
+                        val fallbackCenter = pendingSeedScreenPoint ?: Offset(
+                            canvasSize.width.coerceAtLeast(1) / 2f,
+                            canvasSize.height.coerceAtLeast(1) / 2f
+                        )
+                        trackingRoi = (trackingRoi ?: ensureTrackingRoi(fallbackCenter)).let { roi ->
+                            roi.copy(locked = !roi.locked)
+                        }
+                        saveCurrentTrackAutoState()
+                    }
+                )
+            }
         )
 
         if (useLandscapeSplit && !analysisMode) {
@@ -7020,7 +7226,8 @@ private fun WorkspaceOverlayPanels(
     lightTimeSeriesD: List<LightTimePoint>,
     onClearLightTimeSeries: (LightSlot) -> Unit,
     graphFullScreen: Boolean = false,
-    onGraphFullScreenChange: (Boolean) -> Unit = {}
+    onGraphFullScreenChange: (Boolean) -> Unit = {},
+    analysisTrackingControls: @Composable () -> Unit = {}
 ) {
     if (!videoFocusMode && ((dataMode && showDataTable) || showLandscapeLiveGraph)) {
         val resolvedDataPanelMode = if (showLandscapeLiveGraph && trackMode && dataPanelMode != DataPanelMode.ANALYSIS) {
@@ -7127,6 +7334,7 @@ private fun WorkspaceOverlayPanels(
                     onExportXlsx = onAnalysisExportXlsx,
                     onExportPdf = onAnalysisExportPdf,
                     isLandscape = isLandscape,
+                    trackingControls = analysisTrackingControls,
                     modifier = panelModifier
                 )
             }
@@ -7346,6 +7554,7 @@ private fun TrackGraphOverlay(
     isLandscape: Boolean,
     graphFullScreen: Boolean = false,
     onGraphFullScreenChange: (Boolean) -> Unit = {},
+    trackingControls: @Composable () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     FloatingGraphPanel(
@@ -7431,6 +7640,7 @@ private fun TrackGraphOverlay(
         onExportPdf = onExportPdf,
         analysisMode = analysisMode,
         isLandscape = isLandscape,
+        trackingControls = trackingControls,
         modifier = modifier
     )
 }
@@ -8143,6 +8353,156 @@ private fun MoreBottomTrayContent(
 }
 
 @Composable
+private fun TrackingRoiControlPanel(
+    roi: TrackingRoi?,
+    previewBitmap: Bitmap?,
+    activeTrack: ActiveTrack,
+    stepPx: Float,
+    onStepChange: (Float) -> Unit,
+    onMove: (Float, Float) -> Unit,
+    onResize: (Float, Float) -> Unit,
+    onReset: () -> Unit,
+    onToggleLock: () -> Unit
+) {
+    val accent = if (activeTrack == ActiveTrack.A) PhysicsColorTrackA else PhysicsColorTrackB
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text(
+                    "TRACKING BOX · ${activeTrack.name}",
+                    color = accent,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    roi?.let {
+                        "X %.1f   Y %.1f   W %.1f   H %.1f".format(
+                            it.center.x,
+                            it.center.y,
+                            it.widthPx,
+                            it.heightPx
+                        )
+                    } ?: "Select a target to create the box",
+                    color = PhysicsColorOnSurface.copy(alpha = 0.72f),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                BottomDeckButton(
+                    if (roi?.locked == true) "UNLOCK" else "LOCK",
+                    selected = roi?.locked == true,
+                    enabled = roi != null,
+                    accent = LabGold
+                ) { onToggleLock() }
+                BottomDeckButton("RESET", enabled = roi != null, accent = LabDanger) { onReset() }
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxSize(),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .aspectRatio(1f),
+                color = Color.Black,
+                shape = RoundedCornerShape(10.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, accent.copy(alpha = 0.65f))
+            ) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    if (previewBitmap != null) {
+                        Image(
+                            bitmap = previewBitmap.asImageBitmap(),
+                            contentDescription = "Tracking box live preview",
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        Text(
+                            "LIVE PREVIEW",
+                            color = Color.White.copy(alpha = 0.45f),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val boxWidth = size.width * 0.48f
+                        val boxHeight = size.height * 0.48f
+                        val topLeft = Offset(
+                            (size.width - boxWidth) / 2f,
+                            (size.height - boxHeight) / 2f
+                        )
+                        drawRect(
+                            color = accent,
+                            topLeft = topLeft,
+                            size = Size(boxWidth, boxHeight),
+                            style = Stroke(2.dp.toPx())
+                        )
+                        drawCircle(accent, 3.dp.toPx(), center)
+                    }
+                }
+            }
+            PrecisionDirectionPad(
+                enabled = roi != null && roi.locked.not(),
+                stepPx = stepPx,
+                onNudge = onMove,
+                onConfirm = {},
+                buttonSize = 38.dp,
+                buttonSpacing = 4.dp,
+                rowSpacing = 4.dp,
+                confirmLabel = "·"
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("MOVE STEP", color = PhysicsColorOnSurface, style = MaterialTheme.typography.labelSmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    listOf(1f, 2f, 5f).forEach { step ->
+                        BottomDeckButton(
+                            "${step.roundToInt()} px",
+                            selected = abs(stepPx - step) < 0.01f,
+                            accent = accent
+                        ) { onStepChange(step) }
+                    }
+                }
+                Text("SIZE", color = PhysicsColorOnSurface, style = MaterialTheme.typography.labelSmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    BottomDeckButton("W −", enabled = roi != null && roi.locked.not(), accent = accent) {
+                        onResize(-stepPx * 2f, 0f)
+                    }
+                    BottomDeckButton("W +", enabled = roi != null && roi.locked.not(), accent = accent) {
+                        onResize(stepPx * 2f, 0f)
+                    }
+                    BottomDeckButton("H −", enabled = roi != null && roi.locked.not(), accent = accent) {
+                        onResize(0f, -stepPx * 2f)
+                    }
+                    BottomDeckButton("H +", enabled = roi != null && roi.locked.not(), accent = accent) {
+                        onResize(0f, stepPx * 2f)
+                    }
+                }
+                Text(
+                    if (roi?.locked == true) "Box locked" else "Drag the box, edges, or corners on the video",
+                    color = if (roi?.locked == true) LabGold else PhysicsColorOnSurface.copy(alpha = 0.62f),
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun PrecisionInstrumentPanel(
     title: String,
     trackColor: Color,
@@ -8631,6 +8991,7 @@ private fun FloatingGraphPanel(
     isLandscape: Boolean,
     graphFullScreen: Boolean = false,
     onGraphFullScreenChange: (Boolean) -> Unit = {},
+    trackingControls: @Composable () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val focusManager = LocalFocusManager.current
@@ -9421,7 +9782,8 @@ private fun FloatingGraphPanel(
             },
             fullGraphVisible = graphFullScreen,
             onFullGraphVisibleChange = onGraphFullScreenChange,
-            modifier = modifier
+            modifier = modifier,
+            controlContent = trackingControls
         ) {
             Box(modifier = Modifier.fillMaxSize()) {
                 if (primaryGraphPoints.size < 2) {

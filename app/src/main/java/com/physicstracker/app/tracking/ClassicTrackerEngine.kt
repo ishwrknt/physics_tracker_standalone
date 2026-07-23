@@ -72,11 +72,22 @@ class ClassicTrackerEngine(
         )
     }
 
-    fun seed(bitmap: Bitmap, center: Offset): ClassicTrackingSeed? {
-        val template = when (mode) {
-            ClassicTrackerMode.FAST -> cropTemplateSized(bitmap, center, templateSizeFastPx)
-            ClassicTrackerMode.ACCURATE -> cropTemplate(bitmap, center, templateRadiusAccuratePx)
-        } ?: return null
+    fun seed(
+        bitmap: Bitmap,
+        center: Offset,
+        templateWidthPx: Int? = null,
+        templateHeightPx: Int? = null
+    ): ClassicTrackingSeed? {
+        val template = (
+            if (templateWidthPx != null && templateHeightPx != null) {
+                cropTemplateRect(bitmap, center, templateWidthPx, templateHeightPx)
+            } else {
+                when (mode) {
+                    ClassicTrackerMode.FAST -> cropTemplateSized(bitmap, center, templateSizeFastPx)
+                    ClassicTrackerMode.ACCURATE -> cropTemplate(bitmap, center, templateRadiusAccuratePx)
+                }
+            }
+        ) ?: return null
         val geometrySeed = buildGeometrySeed(bitmap, center)
 
         return ClassicTrackingSeed(
@@ -470,6 +481,14 @@ private fun cropTemplateSized(bitmap: Bitmap, center: Offset, sizePx: Int): Bitm
     val top = center.y.toInt() - (sizePx / 2)
     if (left < 0 || top < 0 || left + sizePx > bitmap.width || top + sizePx > bitmap.height) return null
     return Bitmap.createBitmap(bitmap, left, top, sizePx, sizePx)
+}
+
+private fun cropTemplateRect(bitmap: Bitmap, center: Offset, widthPx: Int, heightPx: Int): Bitmap? {
+    val width = widthPx.coerceIn(8, bitmap.width)
+    val height = heightPx.coerceIn(8, bitmap.height)
+    val left = (center.x.toInt() - width / 2).coerceIn(0, bitmap.width - width)
+    val top = (center.y.toInt() - height / 2).coerceIn(0, bitmap.height - height)
+    return Bitmap.createBitmap(bitmap, left, top, width, height)
 }
 
 private fun luma(color: Int): Int {
