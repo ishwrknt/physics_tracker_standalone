@@ -43,6 +43,7 @@ import com.physicstracker.app.ui.TrackingScreen
 import dagger.hilt.android.AndroidEntryPoint
 
 @AndroidEntryPoint
+@androidx.media3.common.util.UnstableApi
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

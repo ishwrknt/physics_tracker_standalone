@@ -22,12 +22,12 @@ val keystoreProperties = Properties().apply {
 
 android {
     namespace = "com.physicstracker.app"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.physicstracker"
         minSdk = 24
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 1
         versionName = "1.0.0"
 
@@ -84,6 +84,9 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+    sourceSets {
+        getByName("androidTest").assets.srcDir("$projectDir/schemas")
+    }
 }
 
 tasks.withType<KotlinCompile>().configureEach {
@@ -109,6 +112,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("androidx.activity:activity-compose:1.8.2")
     implementation("androidx.webkit:webkit:1.10.0")
+    implementation("androidx.exifinterface:exifinterface:1.4.2")
 
     // Compose
     implementation(platform("androidx.compose:compose-bom:2023.10.01"))
@@ -138,7 +142,7 @@ dependencies {
     implementation("com.google.mediapipe:tasks-vision:0.10.35")
 
     // On-device deep tracking
-    implementation("org.tensorflow:tensorflow-lite:2.14.0")
+    implementation("com.google.ai.edge.litert:litert:1.4.2")
 
     // Tests
     testImplementation("junit:junit:4.13.2")

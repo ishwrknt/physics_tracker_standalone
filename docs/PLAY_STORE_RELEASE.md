@@ -10,10 +10,11 @@ Use this document to create the first production release in Google Play Console.
 | Package name | `com.physicstracker` |
 | Version name | 1.0.0 |
 | Version code | 1 |
+| Target Android API | 36 (Android 16) |
 | Category | Education |
 | Tags to consider | Physics, Science education, Video analysis, STEM |
 | Support email | ishwrknt@gmail.com |
-| Privacy policy | `https://ishwrknt.github.io/physics_tracker_standalone/privacy-policy.html` |
+| Privacy policy | `https://ishwrknt.github.io/physics-tracker-site/privacy-policy.html` |
 
 ## Store listing copy
 
@@ -63,22 +64,23 @@ These answers describe the current source code. Recheck them if features or SDKs
 | Does the app use advertising or analytics SDKs? | No. |
 | Does the app require a user account? | No. |
 | Does the app access location, microphone, camera, contacts, or health data? | No. |
-| Why is media access used? | To let the user select a video for motion analysis. Pictures are selected through Android’s document picker for light analysis. |
-| Privacy policy URL | `https://ishwrknt.github.io/physics_tracker_standalone/privacy-policy.html` |
+| Does the app request broad photo/video library permission? | No. Videos and pictures are opened through Android system pickers and only files explicitly selected by the user are made available to the app. |
+| Privacy policy URL | `https://ishwrknt.github.io/physics-tracker-site/privacy-policy.html` |
 
 Complete the Play Console content-rating questionnaire truthfully. The app is an educational scientific tool; do not select answers on the developer’s behalf where the questionnaire asks about regional distribution, target age, or commercial status.
 
 ## Release steps
 
 1. Back up `upload-keystore.jks` and the ignored `keystore.properties` file in a secure private location. They are required for future app updates.
-2. Enable GitHub Pages for the repository using the `main` branch and `/docs` folder. Confirm that the privacy-policy URL above opens publicly.
+2. Confirm that the public user guide and privacy policy open at `https://ishwrknt.github.io/physics-tracker-site/`.
 3. Create the app in Google Play Console with package name `com.physicstracker`.
 4. Enrol in Play App Signing. Upload `PhysicsTracker-release.aab` from the project root as the first release artifact.
 5. Add the store listing copy and final screenshots/feature graphic.
 6. Complete App content, Data safety, Ads, Content rating, and Target audience sections truthfully.
 7. Set countries/regions, pricing, and any required developer contact details.
 8. Start with Internal testing, install from Play, and exercise import, calibration, manual/auto tracking, image and video light analysis, and CSV/XLSX/PDF export.
-9. Promote to production only after the Play pre-launch report and internal testing show no blocking issues.
+9. If this is a personal developer account created after 13 November 2023, run a closed test with at least 12 continuously opted-in testers for 14 days, then apply for production access.
+10. Promote to production only after the Play pre-launch report and required testing show no blocking issues.
 
 ## Release notes
 

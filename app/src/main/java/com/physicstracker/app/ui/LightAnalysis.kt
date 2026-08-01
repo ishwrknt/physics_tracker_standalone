@@ -48,6 +48,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.physicstracker.app.data.CalibrationEntity
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
@@ -165,6 +166,9 @@ private fun lightScreenToVideoOffset(offset: Offset, videoWidth: Int, videoHeigh
     return Offset(x, y)
 }
 
+private const val MAX_LIGHT_PROFILE_SAMPLES = 512
+private const val MAX_LIGHT_BOX_DEPTH_SAMPLES = 128
+
 private fun sampleChannel(bitmap: Bitmap, x: Int, y: Int, channel: LightChannel): Double {
     val safeX = x.coerceIn(0, bitmap.width - 1)
     val safeY = y.coerceIn(0, bitmap.height - 1)
@@ -180,16 +184,44 @@ private fun sampleChannel(bitmap: Bitmap, x: Int, y: Int, channel: LightChannel)
     }
 }
 
+private fun sampleChannelArea(
+    bitmap: Bitmap,
+    centerX: Int,
+    centerY: Int,
+    radius: Int,
+    channel: LightChannel
+): Double {
+    val left = (centerX - radius).coerceIn(0, bitmap.width - 1)
+    val right = (centerX + radius).coerceIn(0, bitmap.width - 1)
+    val top = (centerY - radius).coerceIn(0, bitmap.height - 1)
+    val bottom = (centerY + radius).coerceIn(0, bitmap.height - 1)
+    var total = 0.0
+    var count = 0
+    for (y in top..bottom) {
+        for (x in left..right) {
+            total += sampleChannel(bitmap, x, y, channel)
+            count++
+        }
+    }
+    return total / count.coerceAtLeast(1)
+}
+
 private fun smoothLightValues(values: List<Double>): List<Double> {
     if (values.size < 3) return values
     return values.mapIndexed { index, _ ->
-        val start = (index - 1).coerceAtLeast(0)
-        val end = (index + 1).coerceAtMost(values.lastIndex)
+        val radius = if (values.size >= 15) 2 else 1
+        val start = (index - radius).coerceAtLeast(0)
+        val end = (index + radius).coerceAtMost(values.lastIndex)
         values.subList(start, end + 1).average()
     }
 }
 
-private fun backgroundLevel(values: List<Double>): Double = values.minOrNull() ?: 0.0
+private fun backgroundLevel(values: List<Double>): Double {
+    // A single point has no separate background population to estimate.
+    if (values.size < 3) return 0.0
+    val sorted = values.sorted()
+    return sorted[((sorted.lastIndex) * 0.05).roundToInt()]
+}
 
 fun lightDistanceToSegment(point: Offset, start: Offset, end: Offset): Float {
     val line = end - start
@@ -217,21 +249,29 @@ fun buildLightProfile(
     fun axisValue(pixelDistance: Double): Double =
         if (metrics != null && calibration != null) (pixelDistance * metrics.metersPerPixel) / unitFactor else pixelDistance
 
-    val raw = when (geometry.tool) {
+    val raw: List<Double>
+    val profileLengthPx: Double
+    when (geometry.tool) {
         LightTool.POINT -> {
             val point = lightScreenToVideoOffset(geometry.start, bitmap.width, bitmap.height, canvasSize) ?: return emptyList()
-            listOf(sampleChannel(bitmap, point.x.roundToInt(), point.y.roundToInt(), channel))
+            raw = listOf(sampleChannelArea(bitmap, point.x.roundToInt(), point.y.roundToInt(), 2, channel))
+            profileLengthPx = 0.0
         }
         LightTool.LINE -> {
             val start = lightScreenToVideoOffset(geometry.start, bitmap.width, bitmap.height, canvasSize) ?: return emptyList()
             val end = lightScreenToVideoOffset(geometry.end, bitmap.width, bitmap.height, canvasSize) ?: return emptyList()
-            val steps = max(24, hypot((end.x - start.x).toDouble(), (end.y - start.y).toDouble()).roundToInt())
-            (0..steps).map { step ->
-                val t = step.toFloat() / steps.toFloat().coerceAtLeast(1f)
+            val sourceLength = hypot((end.x - start.x).toDouble(), (end.y - start.y).toDouble())
+            val sampleCount = (ceil(sourceLength).toInt() + 1).coerceIn(2, MAX_LIGHT_PROFILE_SAMPLES)
+            raw = (0 until sampleCount).map { index ->
+                val t = index.toFloat() / (sampleCount - 1).toFloat()
                 val x = start.x + (end.x - start.x) * t
                 val y = start.y + (end.y - start.y) * t
-                sampleChannel(bitmap, x.roundToInt(), y.roundToInt(), channel)
+                sampleChannelArea(bitmap, x.roundToInt(), y.roundToInt(), 1, channel)
             }
+            profileLengthPx = hypot(
+                (geometry.end.x - geometry.start.x).toDouble(),
+                (geometry.end.y - geometry.start.y).toDouble()
+            )
         }
         LightTool.BOX -> {
             val start = lightScreenToVideoOffset(geometry.start, bitmap.width, bitmap.height, canvasSize) ?: return emptyList()
@@ -240,10 +280,22 @@ fun buildLightProfile(
             val right = max(start.x, end.x).roundToInt().coerceIn(0, bitmap.width - 1)
             val top = min(start.y, end.y).roundToInt().coerceIn(0, bitmap.height - 1)
             val bottom = max(start.y, end.y).roundToInt().coerceIn(0, bitmap.height - 1)
-            (left..right).map { x ->
-                val values = (top..bottom).map { y -> sampleChannel(bitmap, x, y, channel) }
-                values.average()
+            val sourceWidth = (right - left).coerceAtLeast(0)
+            val sourceHeight = (bottom - top).coerceAtLeast(0)
+            val sampleCount = (sourceWidth + 1).coerceIn(1, MAX_LIGHT_PROFILE_SAMPLES)
+            val depthCount = (sourceHeight + 1).coerceIn(1, MAX_LIGHT_BOX_DEPTH_SAMPLES)
+            raw = (0 until sampleCount).map { xIndex ->
+                val xFraction = if (sampleCount == 1) 0.5 else xIndex.toDouble() / (sampleCount - 1)
+                val x = (left + sourceWidth * xFraction).roundToInt()
+                var total = 0.0
+                for (yIndex in 0 until depthCount) {
+                    val yFraction = if (depthCount == 1) 0.5 else yIndex.toDouble() / (depthCount - 1)
+                    val y = (top + sourceHeight * yFraction).roundToInt()
+                    total += sampleChannel(bitmap, x, y, channel)
+                }
+                total / depthCount
             }
+            profileLengthPx = abs(geometry.end.x - geometry.start.x).toDouble()
         }
     }
     val adjusted = if (backgroundSubtract) {
@@ -255,12 +307,10 @@ fun buildLightProfile(
         LightSamplePoint(
             axisValue = when (geometry.tool) {
                 LightTool.POINT -> 0.0
-                LightTool.LINE -> {
-                    val total = max(values.lastIndex, 1)
-                    val lengthPx = hypot((geometry.end.x - geometry.start.x).toDouble(), (geometry.end.y - geometry.start.y).toDouble())
-                    axisValue((lengthPx * index) / total)
+                LightTool.LINE, LightTool.BOX -> {
+                    val fraction = if (values.size <= 1) 0.0 else index.toDouble() / values.lastIndex
+                    axisValue(profileLengthPx * fraction)
                 }
-                LightTool.BOX -> axisValue(index.toDouble())
             },
             intensity = intensity
         )
@@ -289,20 +339,38 @@ fun sampleLightIntensityValue(
 
 fun buildLightStats(samples: List<LightSamplePoint>, detectPeaks: Boolean): LightStats {
     val values = samples.map { it.intensity }
-    val peaks = if (detectPeaks && values.size >= 3) {
-        (1 until values.lastIndex).mapNotNull { index ->
+    val minValue = values.minOrNull()
+    val maxValue = values.maxOrNull()
+    val prominence = if (minValue != null && maxValue != null) (maxValue - minValue) * 0.05 else 0.0
+    val peakIndices = if (detectPeaks && values.size >= 3 && prominence > 1e-6) {
+        val candidates = (1 until values.lastIndex).filter { index ->
             val current = values[index]
-            if (current > values[index - 1] && current >= values[index + 1]) samples[index].axisValue else null
+            current > values[index - 1] && current >= values[index + 1] && current - (minValue ?: current) >= prominence
+        }
+        val minimumGap = max(2, values.size / 200)
+        candidates.fold(mutableListOf<Int>()) { accepted, index ->
+            val previous = accepted.lastOrNull()
+            if (previous == null || index - previous >= minimumGap) {
+                accepted += index
+            } else if (values[index] > values[previous]) {
+                accepted[accepted.lastIndex] = index
+            }
+            accepted
         }
     } else {
         emptyList()
     }
+    val peaks = peakIndices.map { samples[it].axisValue }
     val peakSpacing = peaks.zipWithNext().map { (left, right) -> right - left }.takeIf { it.isNotEmpty() }?.average()
-    val minValue = values.minOrNull()
-    val maxValue = values.maxOrNull()
     val halfMax = if (minValue != null && maxValue != null) minValue + (maxValue - minValue) * 0.5 else null
-    val aboveHalf = if (halfMax != null) samples.filter { it.intensity >= halfMax } else emptyList()
-    val fwhm = if (aboveHalf.size >= 2) aboveHalf.last().axisValue - aboveHalf.first().axisValue else null
+    val fwhm = if (halfMax != null && maxValue != null && values.size >= 3) {
+        val peakIndex = values.indices.maxByOrNull { values[it] } ?: -1
+        var left = peakIndex
+        var right = peakIndex
+        while (left > 0 && values[left] >= halfMax) left--
+        while (right < values.lastIndex && values[right] >= halfMax) right++
+        if (left < peakIndex && right > peakIndex) samples[right].axisValue - samples[left].axisValue else null
+    } else null
     val contrast = if (minValue != null && maxValue != null && (maxValue + minValue) > 1e-6) {
         (maxValue - minValue) / (maxValue + minValue)
     } else {
@@ -447,8 +515,6 @@ fun FloatingLightPanel(
     onExportCsv: () -> Unit,
     onExportXlsx: () -> Unit,
     onExportPdf: () -> Unit,
-    showOptions: Boolean,
-    onShowOptionsChange: (Boolean) -> Unit,
     slotAColor: Color,
     slotBColor: Color,
     slotCColor: Color,
@@ -470,7 +536,7 @@ fun FloatingLightPanel(
     modifier: Modifier = Modifier
 ) {
     val detailsScroll = rememberScrollState()
-    val chartSeries = remember(workspaceTab, mode, compareSource, activeSlot, profileA, profileB, profileC, profileD, timeA, timeB, timeC, timeD, showGraphA, showGraphB, showGraphC, showGraphD) {
+    val chartSeries = remember(workspaceTab, mode, compareSource, activeSlot, dualMode, profileA, profileB, profileC, profileD, timeA, timeB, timeC, timeD, showGraphA, showGraphB, showGraphC, showGraphD, slotAColor, slotBColor, slotCColor, slotDColor) {
         when (mode) {
             LightPanelMode.PROFILE -> {
                 buildList {
@@ -558,7 +624,23 @@ fun FloatingLightPanel(
                 LightSlot.C -> timeC
                 LightSlot.D -> timeD
             }.map { LightSamplePoint(it.timestampUs / 1_000_000.0, it.intensity) }
-            LightPanelMode.COMPARE -> if (compareSource == LightCompareSource.PROFILE) profileA else timeA.map { LightSamplePoint(it.timestampUs / 1_000_000.0, it.intensity) }
+            LightPanelMode.COMPARE -> {
+                if (compareSource == LightCompareSource.PROFILE) {
+                    when (activeSlot) {
+                        LightSlot.A -> profileA
+                        LightSlot.B -> profileB
+                        LightSlot.C -> profileC
+                        LightSlot.D -> profileD
+                    }
+                } else {
+                    when (activeSlot) {
+                        LightSlot.A -> timeA
+                        LightSlot.B -> timeB
+                        LightSlot.C -> timeC
+                        LightSlot.D -> timeD
+                    }.map { LightSamplePoint(it.timestampUs / 1_000_000.0, it.intensity) }
+                }
+            }
         }
         buildLightStats(source, detectPeaks)
     }
@@ -625,8 +707,25 @@ fun FloatingLightPanel(
                         LightChart(
                             modifier = Modifier.fillMaxSize().padding(10.dp),
                             series = chartSeries,
-                            axisLabel = lightAxisLabel(if (mode == LightPanelMode.COMPARE && compareSource == LightCompareSource.TIME) LightPanelMode.TIME else mode, unitLabel),
-                            intensityLabel = "Intensity"
+                            title = when {
+                                mode == LightPanelMode.TIME || (mode == LightPanelMode.COMPARE && compareSource == LightCompareSource.TIME) -> "Intensity over video time"
+                                else -> "Spatial intensity profile"
+                            },
+                            axisLabel = lightAxisLabel(
+                                if (mode == LightPanelMode.COMPARE) {
+                                    if (compareSource == LightCompareSource.TIME) LightPanelMode.TIME else LightPanelMode.PROFILE
+                                } else mode,
+                                unitLabel
+                            ),
+                            intensityLabel = "${channel.name} intensity (0-255)",
+                            detectPeaks = detectPeaks
+                        )
+                    } else {
+                        Text(
+                            "No samples yet. Select a region on the image or video.",
+                            color = Color.White.copy(alpha = 0.62f),
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.align(Alignment.Center).padding(16.dp)
                         )
                     }
                 }
@@ -768,8 +867,32 @@ fun FloatingLightPanel(
                                 onModeSelected(LightPanelMode.COMPARE)
                             }
                         }
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            LightDeckButton("A", selected = activeSlot == LightSlot.A, accent = slotAColor) { onActiveSlotSelected(LightSlot.A) }
+                            LightDeckButton("A\u2714", selected = showGraphA, accent = slotAColor) { onShowGraphAChange(!showGraphA) }
+                            if (dualMode) {
+                                LightDeckButton("B", selected = activeSlot == LightSlot.B, accent = slotBColor) { onActiveSlotSelected(LightSlot.B) }
+                                LightDeckButton("C", selected = activeSlot == LightSlot.C, accent = slotCColor) { onActiveSlotSelected(LightSlot.C) }
+                                LightDeckButton("D", selected = activeSlot == LightSlot.D, accent = slotDColor) { onActiveSlotSelected(LightSlot.D) }
+                                LightDeckButton("B\u2714", selected = showGraphB, accent = slotBColor) { onShowGraphBChange(!showGraphB) }
+                                LightDeckButton("C\u2714", selected = showGraphC, accent = slotCColor) { onShowGraphCChange(!showGraphC) }
+                                LightDeckButton("D\u2714", selected = showGraphD, accent = slotDColor) { onShowGraphDChange(!showGraphD) }
+                            }
+                            if (compareSource == LightCompareSource.TIME) {
+                                LightDeckButton(if (timeRecording) "STOP" else "START", selected = timeRecording, accent = if (timeRecording) Color(0xFFE98D85) else Color(0xFF83D49A)) {
+                                    if (timeRecording) onStopTimeRecording() else onStartTimeRecording()
+                                }
+                                LightDeckButton("CLEAR", accent = Color(0xFFE98D85)) { onClearAllTimeSeries() }
+                            }
+                            LightDeckButton("CSV", accent = Color(0xFF83D49A)) { onExportCsv() }
+                            LightDeckButton("XLSX", accent = Color(0xFF83D49A)) { onExportXlsx() }
+                            LightDeckButton("PDF", accent = Color(0xFF83D49A)) { onExportPdf() }
+                        }
                         LightStatsBlock(
-                            title = "Compare Stats",
+                            title = "${activeSlot.name} compare statistics",
                             stats = focusedStats,
                             unitLabel = if (compareSource == LightCompareSource.TIME) "s" else unitLabel
                         )
@@ -829,59 +952,6 @@ fun FloatingLightPanel(
                         }
                     }
                 }
-                if (showOptions && false) {
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        LightTool.values().forEach { item ->
-                            LightDeckButton(item.name, selected = tool == item, accent = Color(0xFF00E5FF)) {
-                                onToolSelected(item)
-                            }
-                        }
-                        LightDeckButton("A", selected = activeSlot == LightSlot.A, accent = slotAColor) { onActiveSlotSelected(LightSlot.A) }
-                        LightDeckButton("B", selected = activeSlot == LightSlot.B, accent = slotBColor) { onActiveSlotSelected(LightSlot.B) }
-                    }
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        LightChannel.values().forEach { item ->
-                            LightDeckButton(item.name, selected = channel == item, accent = Color.White.copy(alpha = 0.78f)) {
-                                onChannelSelected(item)
-                            }
-                        }
-                    }
-                    if (mode == LightPanelMode.COMPARE) {
-                        Row(
-                            modifier = Modifier.horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            LightDeckButton("PROFILE", selected = compareSource == LightCompareSource.PROFILE, accent = slotAColor) {
-                                onCompareSourceSelected(LightCompareSource.PROFILE)
-                            }
-                            LightDeckButton("TIME", selected = compareSource == LightCompareSource.TIME, accent = slotBColor) {
-                                onCompareSourceSelected(LightCompareSource.TIME)
-                            }
-                        }
-                    }
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        LightDeckButton("BG SUB", selected = backgroundSubtract, accent = Color(0xFFFFC107)) {
-                            onBackgroundSubtractChange(!backgroundSubtract)
-                        }
-                        LightDeckButton("SMOOTH", selected = smoothing, accent = Color(0xFF83D49A)) {
-                            onSmoothingChange(!smoothing)
-                        }
-                        LightDeckButton("PEAKS", selected = detectPeaks, accent = Color(0xFFE98D85)) {
-                            onDetectPeaksChange(!detectPeaks)
-                        }
-                        LightDeckButton("CLEAR A", accent = slotAColor) { onClearTimeSeries(LightSlot.A) }
-                        LightDeckButton("CLEAR B", accent = slotBColor) { onClearTimeSeries(LightSlot.B) }
-                    }
-                }
             }
         }
     }
@@ -903,8 +973,11 @@ fun LightTopTray(
     hasUploadedImage: Boolean,
     onPickImage: () -> Unit,
     onClearUploadedImage: () -> Unit,
+    activeIntensity: Double?,
     slotAColor: Color,
     slotBColor: Color,
+    slotCColor: Color,
+    slotDColor: Color,
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -955,6 +1028,12 @@ fun LightTopTray(
                     LightDeckButton("B", selected = lightActiveSlot == LightSlot.B, accent = slotBColor) {
                         onLightActiveSlotSelected(LightSlot.B)
                     }
+                    LightDeckButton("C", selected = lightActiveSlot == LightSlot.C, accent = slotCColor) {
+                        onLightActiveSlotSelected(LightSlot.C)
+                    }
+                    LightDeckButton("D", selected = lightActiveSlot == LightSlot.D, accent = slotDColor) {
+                        onLightActiveSlotSelected(LightSlot.D)
+                    }
                 }
                 if (lightPanelMode == LightPanelMode.TIME) {
                     LightDeckButton(
@@ -969,6 +1048,19 @@ fun LightTopTray(
                     }
                 }
             }
+            Text(
+                text = buildString {
+                    append(if (hasUploadedImage) "Photo" else "Video frame")
+                    append(" • ${lightActiveSlot.name} mean intensity: ")
+                    append(activeIntensity?.let(::formatCalibratedValue) ?: "--")
+                    append(" / 255 • Drag the region or its handles to measure")
+                },
+                color = Color.White.copy(alpha = 0.78f),
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
@@ -996,29 +1088,34 @@ private fun LightDeckButton(
 @Composable
 private fun LightChart(
     series: List<LightSeries>,
+    title: String,
     axisLabel: String,
     intensityLabel: String,
+    detectPeaks: Boolean,
     modifier: Modifier = Modifier
 ) {
     Canvas(modifier = modifier) {
         val plotLeft = 52f
-        val plotTop = 14f
-        val plotRight = size.width - 14f
-        val plotBottom = size.height - 26f
+        val plotTop = 34f
+        val plotRight = size.width - 16f
+        val plotBottom = size.height - 36f
         val plotWidth = (plotRight - plotLeft).coerceAtLeast(1f)
         val plotHeight = (plotBottom - plotTop).coerceAtLeast(1f)
         val allSamples = series.flatMap { it.samples }
         val minX = allSamples.minOfOrNull { it.axisValue } ?: 0.0
         val maxX = allSamples.maxOfOrNull { it.axisValue } ?: 1.0
-        val minY = allSamples.minOfOrNull { it.intensity } ?: 0.0
-        val maxY = allSamples.maxOfOrNull { it.intensity } ?: 1.0
         val xRange = (maxX - minX).takeIf { it > 1e-6 } ?: 1.0
-        val yRange = (maxY - minY).takeIf { it > 1e-6 } ?: 1.0
+        val minY = 0.0
+        val maxY = 255.0
+        val yRange = maxY - minY
         drawLine(Color.White.copy(alpha = 0.35f), Offset(plotLeft, plotBottom), Offset(plotRight, plotBottom), 1.dp.toPx())
         drawLine(Color.White.copy(alpha = 0.35f), Offset(plotLeft, plotTop), Offset(plotLeft, plotBottom), 1.dp.toPx())
-        repeat(4) { index ->
-            val y = plotTop + plotHeight * (index / 4f)
+        repeat(5) { index ->
+            val fraction = index / 4f
+            val y = plotTop + plotHeight * fraction
             drawLine(Color.White.copy(alpha = 0.08f), Offset(plotLeft, y), Offset(plotRight, y), 1.dp.toPx())
+            val x = plotLeft + plotWidth * fraction
+            drawLine(Color.White.copy(alpha = 0.06f), Offset(x, plotTop), Offset(x, plotBottom), 1.dp.toPx())
         }
         series.forEach { item ->
             if (item.samples.isEmpty()) return@forEach
@@ -1027,21 +1124,40 @@ private fun LightChart(
                 val x = plotLeft + (((sample.axisValue - minX) / xRange) * plotWidth).toFloat()
                 val y = plotBottom - (((sample.intensity - minY) / yRange) * plotHeight).toFloat()
                 if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
-                drawCircle(item.color.copy(alpha = 0.9f), 2.4.dp.toPx(), Offset(x, y))
+                if (item.samples.size <= 240) drawCircle(item.color.copy(alpha = 0.9f), 2.4.dp.toPx(), Offset(x, y))
             }
             drawPath(path, item.color, style = Stroke(width = 1.5.dp.toPx()))
+            if (detectPeaks) {
+                val peakAxes = buildLightStats(item.samples, true).peakPositions.toSet()
+                item.samples.filter { it.axisValue in peakAxes }.forEach { sample ->
+                    val x = plotLeft + (((sample.axisValue - minX) / xRange) * plotWidth).toFloat()
+                    val y = plotBottom - (((sample.intensity - minY) / yRange) * plotHeight).toFloat()
+                    drawCircle(Color(0xFFFFC107), 4.dp.toPx(), Offset(x, y), style = Stroke(width = 1.5.dp.toPx()))
+                }
+            }
         }
         drawIntoCanvas { canvas ->
             val labelPaint = android.graphics.Paint().apply {
                 isAntiAlias = true
-                textSize = 22f
+                textSize = 20f
                 color = android.graphics.Color.WHITE
             }
-            canvas.nativeCanvas.drawText(axisLabel, plotLeft, size.height - 4f, labelPaint)
-            canvas.nativeCanvas.drawText(intensityLabel, 4f, 24f, labelPaint)
+            canvas.nativeCanvas.drawText(title, plotLeft, 20f, labelPaint)
+            labelPaint.textSize = 17f
+            canvas.nativeCanvas.drawText(axisLabel, plotLeft, size.height - 5f, labelPaint)
+            canvas.nativeCanvas.drawText(intensityLabel, 4f, 18f, labelPaint)
+            repeat(5) { index ->
+                val fraction = index / 4.0
+                val xValue = minX + xRange * fraction
+                val yValue = maxY - yRange * fraction
+                val x = plotLeft + plotWidth * fraction.toFloat()
+                val y = plotTop + plotHeight * fraction.toFloat()
+                canvas.nativeCanvas.drawText(formatCalibratedValue(xValue), x - 10f, plotBottom + 18f, labelPaint)
+                canvas.nativeCanvas.drawText(yValue.roundToInt().toString(), 4f, y + 6f, labelPaint)
+            }
             series.forEachIndexed { index, item ->
                 labelPaint.color = item.color.toArgb()
-                canvas.nativeCanvas.drawText(item.label, plotLeft + index * 150f, 18f, labelPaint)
+                canvas.nativeCanvas.drawText(item.label, plotLeft + 230f + index * 55f, 20f, labelPaint)
             }
         }
     }
@@ -1051,13 +1167,13 @@ private fun LightChart(
 private fun LightStatsBlock(title: String, stats: LightStats, unitLabel: String) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(title, color = Color(0xFF00E5FF), style = MaterialTheme.typography.labelMedium, fontFamily = FontFamily.Monospace)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             LightMetric("N", stats.sampleCount.toString(), Color.White)
             LightMetric("Min", stats.min?.let(::formatCalibratedValue) ?: "--", Color.White)
             LightMetric("Max", stats.max?.let(::formatCalibratedValue) ?: "--", Color.White)
             LightMetric("Mean", stats.mean?.let(::formatCalibratedValue) ?: "--", Color.White)
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             LightMetric("Peaks", stats.peakPositions.size.toString(), Color(0xFFFFC107))
             LightMetric("Spacing", stats.peakSpacing?.let { "${formatCalibratedValue(it)} $unitLabel" } ?: "--", Color(0xFFFFC107))
             LightMetric("Contrast", stats.contrast?.let(::formatCalibratedValue) ?: "--", Color(0xFF83D49A))
@@ -1091,12 +1207,26 @@ private fun LightGeometryBlock(label: String, color: Color, geometry: LightGeome
 private fun LightTableBlock(title: String, series: List<LightSeries>) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(title, color = Color(0xFF00E5FF), style = MaterialTheme.typography.labelMedium, fontFamily = FontFamily.Monospace)
+        Text(
+            "Axis value        Intensity (0-255)",
+            color = Color.White.copy(alpha = 0.58f),
+            style = MaterialTheme.typography.labelSmall,
+            fontFamily = FontFamily.Monospace
+        )
         series.forEach { item ->
             Text(item.label, color = item.color, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
             item.samples.take(18).forEach { sample ->
                 Text(
                     text = "${formatCalibratedValue(sample.axisValue)}   ${formatCalibratedValue(sample.intensity)}",
                     color = Color.White.copy(alpha = 0.84f),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+            if (item.samples.size > 18) {
+                Text(
+                    "Showing 18 of ${item.samples.size}; export includes every sample.",
+                    color = Color.White.copy(alpha = 0.5f),
                     style = MaterialTheme.typography.labelSmall,
                     fontFamily = FontFamily.Monospace
                 )

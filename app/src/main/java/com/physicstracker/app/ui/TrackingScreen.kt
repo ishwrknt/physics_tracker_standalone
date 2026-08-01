@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.graphics.Rect
 import android.net.Uri
 import android.os.Handler
@@ -87,6 +88,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.zIndex
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
+import androidx.exifinterface.media.ExifInterface
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import android.view.LayoutInflater
@@ -883,6 +885,15 @@ private fun classicTrackerMode(mode: AutoTrackMode): ClassicTrackerMode? = when 
     else -> null
 }
 
+private inline fun <T> withMediaMetadataRetriever(block: (MediaMetadataRetriever) -> T): T {
+    val retriever = MediaMetadataRetriever()
+    return try {
+        block(retriever)
+    } finally {
+        retriever.release()
+    }
+}
+
 private fun videoDisplayRect(videoWidth: Int, videoHeight: Int, canvasSize: IntSize): Rect {
     val canvasWidth = canvasSize.width.toFloat()
     val canvasHeight = canvasSize.height.toFloat()
@@ -924,11 +935,48 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     else -> null
 }
 
-private suspend fun capturePlayerBitmap(activity: Activity, playerView: PlayerView): Bitmap? {
+@androidx.media3.common.util.UnstableApi
+private suspend fun capturePlayerBitmap(playerView: PlayerView): Bitmap? {
     val textureView = playerView.videoSurfaceView as? android.view.TextureView ?: return null
     return textureView.bitmap
 }
 
+private fun decodeLightBitmap(context: Context, uri: Uri, maxSide: Int = 2560): Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    var sampleSize = 1
+    while (max(bounds.outWidth, bounds.outHeight) / sampleSize > maxSide) sampleSize *= 2
+    val decoded = context.contentResolver.openInputStream(uri)?.use {
+        BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply {
+            inSampleSize = sampleSize
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        })
+    } ?: return null
+    val orientation = runCatching {
+        context.contentResolver.openInputStream(uri)?.use { stream ->
+            ExifInterface(stream).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+        }
+    }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
+    val matrix = Matrix().apply {
+        when (orientation) {
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> postScale(-1f, 1f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> postRotate(180f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> postScale(1f, -1f)
+            ExifInterface.ORIENTATION_TRANSPOSE -> { postRotate(90f); postScale(-1f, 1f) }
+            ExifInterface.ORIENTATION_ROTATE_90 -> postRotate(90f)
+            ExifInterface.ORIENTATION_TRANSVERSE -> { postRotate(270f); postScale(-1f, 1f) }
+            ExifInterface.ORIENTATION_ROTATE_270 -> postRotate(270f)
+        }
+    }
+    if (orientation == ExifInterface.ORIENTATION_NORMAL || orientation == ExifInterface.ORIENTATION_UNDEFINED) return decoded
+    return runCatching {
+        Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
+            .also { rotated -> if (rotated !== decoded) decoded.recycle() }
+    }.getOrElse { decoded }
+}
+
+@androidx.media3.common.util.UnstableApi
 private fun playerPointToCapturedBitmap(
     playerView: PlayerView,
     point: Offset,
@@ -1963,7 +2011,11 @@ private fun KinematicsHeaderText(
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
+@OptIn(
+    ExperimentalMaterial3Api::class,
+    androidx.compose.foundation.ExperimentalFoundationApi::class
+)
+@androidx.media3.common.util.UnstableApi
 @Composable
 fun TrackingScreen(
     videoUri: String,
@@ -2210,18 +2262,30 @@ fun TrackingScreen(
     val lightMode = majorMode == MajorMode.LIGHT
     val lightImagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { selectedUri ->
-            val bitmap = runCatching {
-                context.contentResolver.openInputStream(selectedUri)?.use(BitmapFactory::decodeStream)
-            }.getOrNull()
-            if (bitmap != null) {
-                lightSourceImage = bitmap
-                lightGeometryA = null
-                lightGeometryB = null
-                lightGeometryC = null
-                lightGeometryD = null
-                lightTimeRecording = false
+            scope.launch {
+                val bitmap = withContext(Dispatchers.IO) {
+                    runCatching { decodeLightBitmap(context, selectedUri) }.getOrNull()
+                }
+                if (bitmap != null) {
+                    lightSourceImage = bitmap
+                    lightGeometryA = null
+                    lightGeometryB = null
+                    lightGeometryC = null
+                    lightGeometryD = null
+                    lightTimeRecording = false
+                    lightTimeSeriesA.clear()
+                    lightTimeSeriesB.clear()
+                    lightTimeSeriesC.clear()
+                    lightTimeSeriesD.clear()
+                    exportStatus = "Image ready for light analysis"
+                } else {
+                    exportStatus = "Could not open that image"
+                }
             }
         }
+    }
+    LaunchedEffect(lightMode) {
+        if (!lightMode) lightTimeRecording = false
     }
     val analysisMode = dataMode && dataPanelMode == DataPanelMode.ANALYSIS
     LaunchedEffect(forceLandscapeMode) {
@@ -2452,6 +2516,15 @@ fun TrackingScreen(
         lightTimeSeriesB.clear()
         lightTimeSeriesC.clear()
         lightTimeSeriesD.clear()
+    }
+    fun startLightTimeRecording() {
+        lightTimeRecording = true
+        if (lightSourceImage == null) viewModel.play()
+        exportStatus = if (lightSourceImage == null) "Recording light intensity from video" else "Captured intensity from image"
+    }
+    fun stopLightTimeRecording() {
+        lightTimeRecording = false
+        exportStatus = "Light recording stopped"
     }
     fun measurementLengthInDisplayUnits(measurement: MeasurementStickDraft?, calibrationEntity: CalibrationEntity?): Double? {
         val currentMeasurement = measurement ?: return null
@@ -3148,14 +3221,6 @@ fun TrackingScreen(
     val selectedProfileResult = remember(selectedGraphSamples, graphProfileMode) {
         fitProfile(selectedGraphSamples, graphProfileMode)
     }
-    val lightProfileStatsA = remember(lightProfileA, lightDetectPeaks) { buildLightStats(lightProfileA, lightDetectPeaks) }
-    val lightProfileStatsB = remember(lightProfileB, lightDetectPeaks) { buildLightStats(lightProfileB, lightDetectPeaks) }
-    val lightTimeStatsA = remember(lightTimeSeriesA.toList(), lightDetectPeaks) {
-        buildLightStats(lightTimeSeriesA.map { LightSamplePoint(it.timestampUs / 1_000_000.0, it.intensity) }, lightDetectPeaks)
-    }
-    val lightTimeStatsB = remember(lightTimeSeriesB.toList(), lightDetectPeaks) {
-        buildLightStats(lightTimeSeriesB.map { LightSamplePoint(it.timestampUs / 1_000_000.0, it.intensity) }, lightDetectPeaks)
-    }
     val activeLightExport = remember(
         lightMode,
         lightWorkspaceTab,
@@ -3166,97 +3231,113 @@ fun TrackingScreen(
         lightDualMode,
         showLightGraphA,
         showLightGraphB,
+        showLightGraphC,
+        showLightGraphD,
         showLightTableA,
         showLightTableB,
+        showLightTableC,
+        showLightTableD,
         lightGeometryA,
         lightGeometryB,
+        lightGeometryC,
+        lightGeometryD,
         lightProfileA,
         lightProfileB,
+        lightProfileC,
+        lightProfileD,
         lightTimeSeriesA.toList(),
         lightTimeSeriesB.toList(),
+        lightTimeSeriesC.toList(),
+        lightTimeSeriesD.toList(),
         lightDetectPeaks,
         trackAColorArgb,
         trackBColorArgb,
-        calibration
+        calibration,
+        lightSourceImage
     ) {
+        // A calibration belongs to the opened video. An independently selected
+        // photo has no known physical scale, so its position axis must use px.
+        val sourceCalibration = calibration.takeIf { lightSourceImage == null }
         val exportMode = when (lightPanelMode) {
             LightPanelMode.PROFILE -> "Profile"
             LightPanelMode.TIME -> "Time"
             LightPanelMode.COMPARE -> "Compare ${lightCompareSource.name.lowercase().replaceFirstChar { it.uppercase() }}"
         }
-        val profileSeriesA = lightProfileA
-        val profileSeriesB = lightProfileB
-        val timeSeriesA = lightTimeSeriesA.map { LightSamplePoint(it.timestampUs / 1_000_000.0, it.intensity) }
-        val timeSeriesB = lightTimeSeriesB.map { LightSamplePoint(it.timestampUs / 1_000_000.0, it.intensity) }
-        val modeSeriesA = when (lightPanelMode) {
-            LightPanelMode.PROFILE -> profileSeriesA
-            LightPanelMode.TIME -> timeSeriesA
-            LightPanelMode.COMPARE -> if (lightCompareSource == LightCompareSource.PROFILE) profileSeriesA else timeSeriesA
-        }
-        val modeSeriesB = when (lightPanelMode) {
-            LightPanelMode.PROFILE -> profileSeriesB
-            LightPanelMode.TIME -> timeSeriesB
-            LightPanelMode.COMPARE -> if (lightCompareSource == LightCompareSource.PROFILE) profileSeriesB else timeSeriesB
-        }
-        val focusedSeries = when {
-            lightPanelMode == LightPanelMode.COMPARE -> if (showLightGraphA || showLightTableA || !lightDualMode) modeSeriesA else modeSeriesB
-            lightActiveSlot == LightSlot.A -> modeSeriesA
-            else -> modeSeriesB
-        }
-        val compareSeries = buildList {
-            val exportShowA = if (lightWorkspaceTab == LightWorkspaceTab.TABLE) showLightTableA else showLightGraphA
-            val exportShowB = if (lightWorkspaceTab == LightWorkspaceTab.TABLE) showLightTableB else showLightGraphB
-            val first = modeSeriesA
-            val second = modeSeriesB
-            if (lightPanelMode == LightPanelMode.COMPARE || (lightDualMode && (exportShowA || exportShowB))) {
-                if (exportShowA && first.isNotEmpty()) add(LightExportSeries("A", lightSeriesToGraphSamples(first), trackAColorArgb))
-                if (lightDualMode && exportShowB && second.isNotEmpty()) add(LightExportSeries("B", lightSeriesToGraphSamples(second), trackBColorArgb))
+        val slots = if (lightDualMode) LightSlot.values().toList() else listOf(LightSlot.A)
+        val profileSeries = mapOf(
+            LightSlot.A to lightProfileA,
+            LightSlot.B to lightProfileB,
+            LightSlot.C to lightProfileC,
+            LightSlot.D to lightProfileD
+        )
+        val timeSeries = mapOf(
+            LightSlot.A to lightTimeSeriesA.map { LightSamplePoint(it.timestampUs / 1_000_000.0, it.intensity) },
+            LightSlot.B to lightTimeSeriesB.map { LightSamplePoint(it.timestampUs / 1_000_000.0, it.intensity) },
+            LightSlot.C to lightTimeSeriesC.map { LightSamplePoint(it.timestampUs / 1_000_000.0, it.intensity) },
+            LightSlot.D to lightTimeSeriesD.map { LightSamplePoint(it.timestampUs / 1_000_000.0, it.intensity) }
+        )
+        val selectedSeries = slots.associateWith { slot ->
+            when (lightPanelMode) {
+                LightPanelMode.PROFILE -> profileSeries.getValue(slot)
+                LightPanelMode.TIME -> timeSeries.getValue(slot)
+                LightPanelMode.COMPARE -> if (lightCompareSource == LightCompareSource.PROFILE) profileSeries.getValue(slot) else timeSeries.getValue(slot)
             }
+        }
+        val visibleBySlot = mapOf(
+            LightSlot.A to if (lightWorkspaceTab == LightWorkspaceTab.TABLE) showLightTableA else showLightGraphA,
+            LightSlot.B to if (lightWorkspaceTab == LightWorkspaceTab.TABLE) showLightTableB else showLightGraphB,
+            LightSlot.C to if (lightWorkspaceTab == LightWorkspaceTab.TABLE) showLightTableC else showLightGraphC,
+            LightSlot.D to if (lightWorkspaceTab == LightWorkspaceTab.TABLE) showLightTableD else showLightGraphD
+        )
+        val colors = mapOf(
+            LightSlot.A to trackAColorArgb,
+            LightSlot.B to trackBColorArgb,
+            LightSlot.C to Color(0xFF9B59B6).toArgb(),
+            LightSlot.D to Color(0xFF3498DB).toArgb()
+        )
+        val focusedSeries = selectedSeries[lightActiveSlot].orEmpty()
+        val compareSeries = slots.mapNotNull { slot ->
+            val samples = selectedSeries.getValue(slot)
+            if (visibleBySlot[slot] == true && samples.isNotEmpty()) {
+                LightExportSeries(slot.name, lightSeriesToGraphSamples(samples), colors.getValue(slot))
+            } else null
         }
         val stats = buildList {
             add("Mode: $exportMode")
             add("Channel: ${lightChannel.name}")
-            add("Geometry A: ${lightGeometrySummary(lightGeometryA, calibration)}")
-            if (lightDualMode) add("Geometry B: ${lightGeometrySummary(lightGeometryB, calibration)}")
-            when (lightPanelMode) {
-                LightPanelMode.PROFILE -> {
-                    add("A profile mean ${lightProfileStatsA.mean?.let(::formatCalibratedValue) ?: "--"}")
-                    if (lightDualMode) add("B profile mean ${lightProfileStatsB.mean?.let(::formatCalibratedValue) ?: "--"}")
+            slots.forEach { slot ->
+                val geometry = when (slot) {
+                    LightSlot.A -> lightGeometryA
+                    LightSlot.B -> lightGeometryB
+                    LightSlot.C -> lightGeometryC
+                    LightSlot.D -> lightGeometryD
                 }
-                LightPanelMode.TIME -> {
-                    add("A time mean ${lightTimeStatsA.mean?.let(::formatCalibratedValue) ?: "--"}")
-                    if (lightDualMode) add("B time mean ${lightTimeStatsB.mean?.let(::formatCalibratedValue) ?: "--"}")
-                }
-                LightPanelMode.COMPARE -> {
-                    if (lightCompareSource == LightCompareSource.PROFILE) {
-                        add("A profile mean ${lightProfileStatsA.mean?.let(::formatCalibratedValue) ?: "--"}")
-                        if (lightDualMode) add("B profile mean ${lightProfileStatsB.mean?.let(::formatCalibratedValue) ?: "--"}")
-                    } else {
-                        add("A time mean ${lightTimeStatsA.mean?.let(::formatCalibratedValue) ?: "--"}")
-                        if (lightDualMode) add("B time mean ${lightTimeStatsB.mean?.let(::formatCalibratedValue) ?: "--"}")
-                    }
-                }
+                val slotStats = buildLightStats(selectedSeries.getValue(slot), lightDetectPeaks)
+                add("Geometry ${slot.name}: ${lightGeometrySummary(geometry, sourceCalibration)}")
+                add("${slot.name}: N=${slotStats.sampleCount}, min=${slotStats.min?.let(::formatCalibratedValue) ?: "--"}, max=${slotStats.max?.let(::formatCalibratedValue) ?: "--"}, mean=${slotStats.mean?.let(::formatCalibratedValue) ?: "--"}")
             }
         }
         val tableRows = buildList {
-            val exportShowA = if (lightWorkspaceTab == LightWorkspaceTab.TABLE) showLightTableA else showLightGraphA
-            val exportShowB = if (lightWorkspaceTab == LightWorkspaceTab.TABLE) showLightTableB else showLightGraphB
-            if (!lightDualMode || exportShowA) {
-                modeSeriesA.take(96).forEach { add("A,${exportMode.uppercase(Locale.US)},${formatCalibratedValue(it.axisValue)},${formatCalibratedValue(it.intensity)}") }
-            }
-            if (lightDualMode && exportShowB) {
-                modeSeriesB.take(96).forEach { add("B,${exportMode.uppercase(Locale.US)},${formatCalibratedValue(it.axisValue)},${formatCalibratedValue(it.intensity)}") }
+            slots.filter { visibleBySlot[it] == true || (!lightDualMode && it == LightSlot.A) }.forEach { slot ->
+                selectedSeries.getValue(slot).forEach { sample ->
+                    add("${slot.name},${exportMode.uppercase(Locale.US)},${formatCalibratedValue(sample.axisValue)},${formatCalibratedValue(sample.intensity)}")
+                }
             }
         }
         LightAnalysisExport(
             modeLabel = exportMode,
             channelLabel = lightChannel.name,
-            unitLabel = calibration?.calibrationUnit ?: "px",
+            unitLabel = sourceCalibration?.calibrationUnit ?: "px",
             geometrySummary = buildString {
-                append(lightGeometrySummary(lightGeometryA, calibration))
-                if (lightDualMode) {
-                    append(" | ")
-                    append(lightGeometrySummary(lightGeometryB, calibration))
+                slots.forEachIndexed { index, slot ->
+                    if (index > 0) append(" | ")
+                    val geometry = when (slot) {
+                        LightSlot.A -> lightGeometryA
+                        LightSlot.B -> lightGeometryB
+                        LightSlot.C -> lightGeometryC
+                        LightSlot.D -> lightGeometryD
+                    }
+                    append("${slot.name}: ${lightGeometrySummary(geometry, sourceCalibration)}")
                 }
             },
             focusedSeries = lightSeriesToGraphSamples(focusedSeries),
@@ -3548,7 +3629,7 @@ fun TrackingScreen(
         val roiSnapshot = trackingRoi
         val seedResult = withContext(Dispatchers.IO) {
             runCatching {
-                MediaMetadataRetriever().use { retriever ->
+                withMediaMetadataRetriever { retriever ->
                     retriever.setDataSource(context, Uri.parse(videoUri))
                     val bitmap = retriever.getFrameAtTime(frameTimeUs, MediaMetadataRetriever.OPTION_CLOSEST) ?: return@runCatching null
                     val tappedVideoTarget = screenToVideoOffset(target, bitmap.width, bitmap.height, canvasSize) ?: return@runCatching null
@@ -3973,9 +4054,9 @@ fun TrackingScreen(
             trackLabel = targetTrackLabel
         )
         val result = runCatching {
-            MediaMetadataRetriever().use { retriever ->
+            withMediaMetadataRetriever { retriever ->
                 retriever.setDataSource(context, Uri.parse(videoUri))
-                var currentSeed = seed ?: return@use Triple<AutoTrackSeed?, Long?, String>(null, null, "Seed auto-track first")
+                var currentSeed = seed ?: return@withMediaMetadataRetriever Triple<AutoTrackSeed?, Long?, String>(null, null, "Seed auto-track first")
                 var trackedFrames = 0
                 val endFrameExclusive = (startFrame + (frameCount * frameStride)).let { requested ->
                     if (sampleTimesUs.isNotEmpty()) requested.coerceAtMost(sampleTimesUs.lastIndex) else requested
@@ -4002,14 +4083,14 @@ fun TrackingScreen(
                     autoTrackStatus = "${trackingProfile.label} ${trackedFrames + 1}/$frameCount  step ${frameStride}f"
                     val bitmap = withContext(Dispatchers.IO) {
                         retriever.getFrameAtTime((trimStart + localPositionMs) * 1000L, MediaMetadataRetriever.OPTION_CLOSEST)
-                    } ?: return@use Triple<AutoTrackSeed?, Long?, String>(currentSeed, trackedFrames.toLong(), "Lost: frame read failed")
+                    } ?: return@withMediaMetadataRetriever Triple<AutoTrackSeed?, Long?, String>(currentSeed, trackedFrames.toLong(), "Lost: frame read failed")
                     if (autoTrackMode == AutoTrackMode.DEEP_ACCURATE) {
                         val deepState = currentSeed.deepTrackingState
-                            ?: return@use Triple(currentSeed, trackedFrames.toLong(), "Lost: deep tracker not seeded")
+                            ?: return@withMediaMetadataRetriever Triple(currentSeed, trackedFrames.toLong(), "Lost: deep tracker not seeded")
                         val deepMatch = deepTracker?.track(bitmap, deepState)
-                            ?: return@use Triple(currentSeed, trackedFrames.toLong(), "Lost: deep segmentation target")
+                            ?: return@withMediaMetadataRetriever Triple(currentSeed, trackedFrames.toLong(), "Lost: deep segmentation target")
                         if (deepMatch.confidence < minimumObservationConfidence(effectiveTrackingQuality)) {
-                            return@use Triple(currentSeed, trackedFrames.toLong(), "Uncertain: deep match paused for correction")
+                            return@withMediaMetadataRetriever Triple(currentSeed, trackedFrames.toLong(), "Uncertain: deep match paused for correction")
                         }
                         val screenPoint = videoToScreenOffset(deepMatch.state.center, bitmap.width, bitmap.height, canvasSize)
                         currentSeed = currentSeed.copy(
@@ -4058,11 +4139,11 @@ fun TrackingScreen(
                     }
                     if (autoTrackMode == AutoTrackMode.MEDIAPIPE_OBJECT) {
                         val mediaPipeState = currentSeed.mediaPipeTrackingState
-                            ?: return@use Triple(currentSeed, trackedFrames.toLong(), "Lost: MediaPipe tracker not seeded")
+                            ?: return@withMediaMetadataRetriever Triple(currentSeed, trackedFrames.toLong(), "Lost: MediaPipe tracker not seeded")
                         val mediaPipeMatch = mediaPipeTracker?.track(bitmap, mediaPipeState, trimStart + localPositionMs)
-                            ?: return@use Triple(currentSeed, trackedFrames.toLong(), "Lost: MediaPipe object")
+                            ?: return@withMediaMetadataRetriever Triple(currentSeed, trackedFrames.toLong(), "Lost: MediaPipe object")
                         if (mediaPipeMatch.confidence < minimumObservationConfidence(effectiveTrackingQuality)) {
-                            return@use Triple(currentSeed, trackedFrames.toLong(), "Uncertain: object match paused for correction")
+                            return@withMediaMetadataRetriever Triple(currentSeed, trackedFrames.toLong(), "Uncertain: object match paused for correction")
                         }
                         val screenPoint = videoToScreenOffset(mediaPipeMatch.state.center, bitmap.width, bitmap.height, canvasSize)
                         currentSeed = currentSeed.copy(
@@ -4110,7 +4191,7 @@ fun TrackingScreen(
                     }
                     val classicUpdate = withContext(Dispatchers.Default) {
                         classicEngine?.trackFrame(bitmap, currentSeed.toClassicSeed())
-                    } ?: return@use Triple(currentSeed, trackedFrames.toLong(), "Lost: no match")
+                    } ?: return@withMediaMetadataRetriever Triple(currentSeed, trackedFrames.toLong(), "Lost: no match")
                     val nextClassicSeed = classicUpdate.seed
                     val screenPoint = videoToScreenOffset(nextClassicSeed.center, bitmap.width, bitmap.height, canvasSize)
                     currentSeed = currentSeed.copy(
@@ -4269,7 +4350,6 @@ fun TrackingScreen(
         }
         runPreparedAutoTracks(steps)
     }
-    val activity = remember(context) { context.findActivity() }
     DisposableEffect(viewModel.player) {
         fun updateSourceSize(videoSize: VideoSize) {
             if (videoSize.width > 0 && videoSize.height > 0) {
@@ -4317,17 +4397,13 @@ fun TrackingScreen(
             magnifierBitmap = null
             return@LaunchedEffect
         }
-        val currentActivity = activity ?: run {
-            magnifierBitmap = null
-            return@LaunchedEffect
-        }
         val currentPlayerView = playerViewRef ?: run {
             magnifierBitmap = null
             return@LaunchedEffect
         }
         while (shouldShowCustomMagnifier) {
             val focus = magnifierFocusPoint ?: break
-            val captured = capturePlayerBitmap(currentActivity, currentPlayerView)
+            val captured = capturePlayerBitmap(currentPlayerView)
             captured?.let { bitmap ->
                 val mappedFocus = playerPointToCapturedBitmap(currentPlayerView, focus, bitmap)
                     ?: screenToVideoOffsetClamped(focus, bitmap.width, bitmap.height, canvasSize)
@@ -4342,12 +4418,20 @@ fun TrackingScreen(
         }
     }
 
+    // A photo is static and needs one analysis pass. Video analysis is capped at
+    // 10 Hz so expensive box profiles finish instead of being cancelled by the
+    // player's 30 Hz position updates before a result can reach the UI.
+    val lightAnalysisFrameKey = when {
+        lightSourceImage != null -> 0L
+        isPlaying -> absoluteCurrentPos / 100L
+        else -> absoluteCurrentPos
+    }
     LaunchedEffect(
         lightMode,
         lightSourceImage,
         playerViewRef,
         canvasSize,
-        absoluteCurrentPos,
+        lightAnalysisFrameKey,
         lightGeometryA,
         lightGeometryB,
         lightGeometryC,
@@ -4355,7 +4439,10 @@ fun TrackingScreen(
         lightTool,
         lightChannel,
         lightBackgroundSubtract,
-        lightSmooth
+        lightSmooth,
+        lightTimeRecording,
+        lightDualMode,
+        calibration
     ) {
         if (!lightMode) return@LaunchedEffect
         if (canvasSize.width <= 1 || canvasSize.height <= 1) return@LaunchedEffect
@@ -4364,84 +4451,44 @@ fun TrackingScreen(
         val geometryC = lightGeometryC ?: lightDefaultGeometry(lightTool, canvasSize, LightSlot.C).also { lightGeometryC = it }
         val geometryD = lightGeometryD ?: lightDefaultGeometry(lightTool, canvasSize, LightSlot.D).also { lightGeometryD = it }
         val captured = lightSourceImage ?: run {
-            val currentActivity = activity ?: return@LaunchedEffect
             val currentPlayerView = playerViewRef ?: return@LaunchedEffect
-            capturePlayerBitmap(currentActivity, currentPlayerView) ?: return@LaunchedEffect
+            capturePlayerBitmap(currentPlayerView) ?: return@LaunchedEffect
         }
-        lightProfileA = buildLightProfile(
-            bitmap = captured,
-            geometry = geometryA,
-            channel = lightChannel,
-            canvasSize = canvasSize,
-            calibration = calibration,
-            backgroundSubtract = lightBackgroundSubtract,
-            smoothing = lightSmooth
-        )
-        lightProfileB = buildLightProfile(
-            bitmap = captured,
-            geometry = geometryB,
-            channel = lightChannel,
-            canvasSize = canvasSize,
-            calibration = calibration,
-            backgroundSubtract = lightBackgroundSubtract,
-            smoothing = lightSmooth
-        )
-        lightProfileC = buildLightProfile(
-            bitmap = captured,
-            geometry = geometryC,
-            channel = lightChannel,
-            canvasSize = canvasSize,
-            calibration = calibration,
-            backgroundSubtract = lightBackgroundSubtract,
-            smoothing = lightSmooth
-        )
-        lightProfileD = buildLightProfile(
-            bitmap = captured,
-            geometry = geometryD,
-            channel = lightChannel,
-            canvasSize = canvasSize,
-            calibration = calibration,
-            backgroundSubtract = lightBackgroundSubtract,
-            smoothing = lightSmooth
-        )
+        val geometries = if (lightDualMode) {
+            listOf(geometryA, geometryB, geometryC, geometryD)
+        } else {
+            listOf(geometryA)
+        }
+        val sourceCalibration = calibration.takeIf { lightSourceImage == null }
+        val profiles = withContext(Dispatchers.Default) {
+            geometries.map { geometry ->
+                buildLightProfile(
+                    bitmap = captured,
+                    geometry = geometry,
+                    channel = lightChannel,
+                    canvasSize = canvasSize,
+                    calibration = sourceCalibration,
+                    backgroundSubtract = lightBackgroundSubtract,
+                    smoothing = lightSmooth
+                )
+            }
+        }
+        lightProfileA = profiles[0]
+        if (lightDualMode) {
+            lightProfileB = profiles[1]
+            lightProfileC = profiles[2]
+            lightProfileD = profiles[3]
+        }
         val currentTimestampUs = absoluteCurrentPos * 1000L
         if (lightTimeRecording) {
-            sampleLightIntensityValue(
-                bitmap = captured,
-                geometry = geometryA,
-                channel = lightChannel,
-                canvasSize = canvasSize,
-                backgroundSubtract = lightBackgroundSubtract
-            )?.let { value ->
+            profiles.getOrNull(0)?.map { it.intensity }?.takeIf { it.isNotEmpty() }?.average()?.let { value ->
                 updateLightTimeSeries(lightTimeSeriesA, currentTimestampUs, value)
             }
             if (lightDualMode) {
-                sampleLightIntensityValue(
-                    bitmap = captured,
-                    geometry = geometryB,
-                    channel = lightChannel,
-                    canvasSize = canvasSize,
-                    backgroundSubtract = lightBackgroundSubtract
-                )?.let { value ->
-                    updateLightTimeSeries(lightTimeSeriesB, currentTimestampUs, value)
-                }
-                sampleLightIntensityValue(
-                    bitmap = captured,
-                    geometry = geometryC,
-                    channel = lightChannel,
-                    canvasSize = canvasSize,
-                    backgroundSubtract = lightBackgroundSubtract
-                )?.let { value ->
-                    updateLightTimeSeries(lightTimeSeriesC, currentTimestampUs, value)
-                }
-                sampleLightIntensityValue(
-                    bitmap = captured,
-                    geometry = geometryD,
-                    channel = lightChannel,
-                    canvasSize = canvasSize,
-                    backgroundSubtract = lightBackgroundSubtract
-                )?.let { value ->
-                    updateLightTimeSeries(lightTimeSeriesD, currentTimestampUs, value)
+                listOf(lightTimeSeriesB, lightTimeSeriesC, lightTimeSeriesD).forEachIndexed { index, series ->
+                    profiles.getOrNull(index + 1)?.map { it.intensity }?.takeIf { it.isNotEmpty() }?.average()?.let { value ->
+                        updateLightTimeSeries(series, currentTimestampUs, value)
+                    }
                 }
             }
         }
@@ -6294,6 +6341,8 @@ fun TrackingScreen(
                                         lightTool = tool
                                         setLightGeometry(LightSlot.A, lightDefaultGeometry(tool, canvasSize, LightSlot.A))
                                         setLightGeometry(LightSlot.B, lightDefaultGeometry(tool, canvasSize, LightSlot.B))
+                                        setLightGeometry(LightSlot.C, lightDefaultGeometry(tool, canvasSize, LightSlot.C))
+                                        setLightGeometry(LightSlot.D, lightDefaultGeometry(tool, canvasSize, LightSlot.D))
                                         auxiliaryPrecisionTarget = AuxiliaryPrecisionTarget.Light(lightActiveSlot, LightDragHandle.START)
                                         showMagnifier = true
                                     },
@@ -6306,7 +6355,9 @@ fun TrackingScreen(
                                     },
                                     lightPanelMode = lightPanelMode,
                                     timeRecording = lightTimeRecording,
-                                    onTimeRecordingToggle = { lightTimeRecording = !lightTimeRecording },
+                                    onTimeRecordingToggle = {
+                                        if (lightTimeRecording) stopLightTimeRecording() else startLightTimeRecording()
+                                    },
                                     onClearTimeSeries = ::clearAllLightTimeSeries,
                                     hasUploadedImage = lightSourceImage != null,
                                     onPickImage = { lightImagePicker.launch(arrayOf("image/*")) },
@@ -6316,9 +6367,20 @@ fun TrackingScreen(
                                         lightGeometryB = null
                                         lightGeometryC = null
                                         lightGeometryD = null
+                                        lightTimeRecording = false
+                                        clearAllLightTimeSeries()
+                                        exportStatus = "Using the current video frame"
                                     },
+                                    activeIntensity = when (lightActiveSlot) {
+                                        LightSlot.A -> lightProfileA
+                                        LightSlot.B -> lightProfileB
+                                        LightSlot.C -> lightProfileC
+                                        LightSlot.D -> lightProfileD
+                                    }.map { it.intensity }.takeIf { it.isNotEmpty() }?.average(),
                                     slotAColor = overlayColorFromArgb(trackAColorArgb),
-                                    slotBColor = overlayColorFromArgb(trackBColorArgb)
+                                    slotBColor = overlayColorFromArgb(trackBColorArgb),
+                                    slotCColor = Color(0xFF9B59B6),
+                                    slotDColor = Color(0xFF3498DB)
                                 )
                             }
                             BottomMainTab.MORE -> {
@@ -6606,7 +6668,11 @@ fun TrackingScreen(
             lightWorkspaceTab = lightWorkspaceTab,
             onLightWorkspaceTabSelected = {
                 lightWorkspaceTab = it
-                if (it == LightWorkspaceTab.COMPARE) lightPanelMode = LightPanelMode.COMPARE
+                if (it == LightWorkspaceTab.COMPARE) {
+                    lightPanelMode = LightPanelMode.COMPARE
+                } else if ((it == LightWorkspaceTab.GRAPH || it == LightWorkspaceTab.TABLE) && lightPanelMode == LightPanelMode.COMPARE) {
+                    lightPanelMode = LightPanelMode.PROFILE
+                }
             },
             lightPanelMode = lightPanelMode,
             onLightPanelModeSelected = { lightPanelMode = it },
@@ -6625,7 +6691,16 @@ fun TrackingScreen(
             lightDualMode = lightDualMode,
             onLightDualModeChange = {
                 lightDualMode = it
-                if (!it) {
+                if (it) {
+                    showLightGraphA = true
+                    showLightGraphB = true
+                    showLightGraphC = true
+                    showLightGraphD = true
+                    showLightTableA = true
+                    showLightTableB = true
+                    showLightTableC = true
+                    showLightTableD = true
+                } else {
                     lightActiveSlot = LightSlot.A
                     showLightGraphA = true
                     showLightGraphB = false
@@ -6662,8 +6737,8 @@ fun TrackingScreen(
             lightDetectPeaks = lightDetectPeaks,
             onLightDetectPeaksChange = { lightDetectPeaks = it },
             lightTimeRecording = lightTimeRecording,
-            onStartLightTimeRecording = { lightTimeRecording = true },
-            onStopLightTimeRecording = { lightTimeRecording = false },
+            onStartLightTimeRecording = ::startLightTimeRecording,
+            onStopLightTimeRecording = ::stopLightTimeRecording,
             onClearAllLightTimeSeries = ::clearAllLightTimeSeries,
             onLightExportCsv = { runExportAction { artifacts -> "CSV ${artifacts.csvFile.name}" } },
             onLightExportXlsx = { runExportAction { artifacts -> "XLSX ${artifacts.excelFile.name}" } },
@@ -6690,7 +6765,7 @@ fun TrackingScreen(
                     "Shared PDF"
                 }
             },
-            lightUnitLabel = calibration?.calibrationUnit ?: "px",
+            lightUnitLabel = if (lightSourceImage != null) "px" else calibration?.calibrationUnit ?: "px",
             lightGeometryA = lightGeometryA,
             lightGeometryB = lightGeometryB,
             lightGeometryC = lightGeometryC,
@@ -7525,8 +7600,6 @@ private fun WorkspaceOverlayPanels(
             onExportCsv = onLightExportCsv,
             onExportXlsx = onLightExportXlsx,
             onExportPdf = onLightExportPdf,
-            showOptions = lightWorkspaceTab == LightWorkspaceTab.MORE,
-            onShowOptionsChange = { onLightWorkspaceTabSelected(if (it) LightWorkspaceTab.MORE else LightWorkspaceTab.GRAPH) },
             slotAColor = trackAColor,
             slotBColor = trackBColor,
             slotCColor = Color(0xFF9B59B6),
