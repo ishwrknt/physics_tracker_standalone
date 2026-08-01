@@ -74,7 +74,7 @@ fun OrientationSetupScreen(
         )
         
         Text(
-            text = "This setting will be saved and used every time you use PhysicsTracker for consistent measurements.",
+            text = "This setting will be saved and used every time you use PhyZX for consistent measurements.",
             color = Color.White.copy(alpha = 0.7f),
             fontSize = 16.sp,
             textAlign = TextAlign.Center,

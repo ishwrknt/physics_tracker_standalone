@@ -499,7 +499,7 @@ private fun buildAuditLog(
         context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "unknown"
     }.getOrDefault("unknown")
     val lines = buildList {
-        add("PhysicsTracker Measurement Audit Log")
+        add("PhyZX Measurement Audit Log")
         add("exported_at=${formatAuditTimestamp(System.currentTimeMillis())}")
         add("project_name=${sanitizeFileName(projectName)}")
         add("app_version=$appVersion")
@@ -1195,7 +1195,7 @@ private fun drawWatermark(
     }
     canvas.save()
     canvas.rotate(-24f, width / 2f, height / 2f)
-    canvas.drawText("PhysicsTracker Verified Export", width / 2f, height / 2f, watermarkPaint)
+    canvas.drawText("PhyZX Verified Export", width / 2f, height / 2f, watermarkPaint)
     canvas.restore()
 }
 
@@ -1231,7 +1231,7 @@ private fun appendAuditPages(
         canvas.drawColor(AndroidColor.rgb(18, 18, 18))
         drawWatermark(canvas, pageWidth, pageHeight)
         var y = 50f
-        canvas.drawText("PhysicsTracker Experiment Report", 40f, y, titlePaint)
+        canvas.drawText("PhyZX Experiment Report", 40f, y, titlePaint)
         y += 30f
         canvas.drawText("Audit Appendix ${index + 1}", 40f, y, bodyPaint)
         y += 28f
@@ -1268,7 +1268,7 @@ private fun appendDataPages(
         canvas.drawColor(AndroidColor.rgb(18, 18, 18))
         drawWatermark(canvas, pageInfo.pageWidth, pageInfo.pageHeight)
         var y = 50f
-        canvas.drawText("PhysicsTracker Data Appendix", 40f, y, titlePaint)
+        canvas.drawText("PhyZX Data Appendix", 40f, y, titlePaint)
         y += 28f
         canvas.drawText(projectName, 40f, y, bodyPaint)
         y += 24f
@@ -1448,7 +1448,7 @@ private fun buildPdf(
         context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "unknown"
     }.getOrDefault("unknown")
     var y = 50f
-    canvas.drawText("PhysicsTracker Experiment Report", 40f, y, titlePaint)
+    canvas.drawText("PhyZX Experiment Report", 40f, y, titlePaint)
     y += 30f
     canvas.drawText("Project: $projectName", 40f, y, bodyPaint)
     y += 20f
@@ -1467,7 +1467,7 @@ private fun buildPdf(
     y += 20f
     canvas.drawText("Device: ${Build.MANUFACTURER} ${Build.MODEL}   Android ${Build.VERSION.RELEASE}", 40f, y, bodyPaint)
     y += 20f
-    canvas.drawText("App: PhysicsTracker $appVersion   Export Integrity: Watermarked local report", 40f, y, bodyPaint)
+    canvas.drawText("App: PhyZX $appVersion   Export Integrity: Watermarked local report", 40f, y, bodyPaint)
     y += 20f
     canvas.drawText("Audit Log SHA-256: ${auditChecksum.take(24)}...", 40f, y, bodyPaint)
     y += 28f

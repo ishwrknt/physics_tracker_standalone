@@ -1,6 +1,6 @@
-# PhysicsTracker Kotlin Standalone
+# PhyZX — Kotlin standalone app
 
-This is the native Android version of PhysicsTracker.
+PhyZX is a native Android app for motion tracking and light-intensity analysis.
 
 Project location:
 - `app/src/main/java/com/physicstracker/app/MainActivity.kt`

@@ -1,8 +1,8 @@
-# PhysicsTracker Scientific UI Redesign
+# PhyZX Scientific UI Redesign
 
 ## Product principle
 
-PhysicsTracker is a measurement instrument. The video is the specimen, the timeline is the acquisition axis, trackers are measurement channels, and graphs/tables are representations of recorded observations. UI decoration must never displace measurement controls or obscure measurement state.
+PhyZX is a measurement instrument. The video is the specimen, the timeline is the acquisition axis, trackers are measurement channels, and graphs/tables are representations of recorded observations. UI decoration must never displace measurement controls or obscure measurement state.
 
 ## Critical audit
 

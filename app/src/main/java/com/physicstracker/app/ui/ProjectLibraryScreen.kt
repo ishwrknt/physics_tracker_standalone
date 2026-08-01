@@ -186,7 +186,7 @@ private fun LibraryHeader(
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                "PhysicsTracker",
+                "PhyZX",
                 color = PhysicsColorOnBackground,
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold

@@ -1,12 +1,12 @@
-# Physics Tracker — Google Play release pack
+# PhyZX — Google Play release pack
 
-Use this document to create the first production release in Google Play Console. The signed Android App Bundle is kept outside Git at the project root as `PhysicsTracker-release.aab`.
+Use this document to create the first production release in Google Play Console. The signed Android App Bundle is kept outside Git at the project root as `PhyZX-release.aab`.
 
 ## App identity
 
 | Field | Value |
 |---|---|
-| App name | Physics Tracker |
+| App name | PhyZX |
 | Package name | `com.physicstracker` |
 | Version name | 1.0.0 |
 | Version code | 1 |
@@ -24,15 +24,15 @@ Track motion and light intensity from videos and photos.
 
 ### Full description
 
-Physics Tracker turns ordinary recordings and images into clear, usable physics measurements. Import a video, calibrate it using a known distance, mark an object frame by frame or use assisted tracking, and view position, velocity, acceleration, speed, and comparison graphs.
+PhyZX turns ordinary recordings and images into clear, usable physics measurements. Import a video, calibrate it using a known distance, mark an object frame by frame or use assisted tracking, and view position, velocity, acceleration, speed, and comparison graphs.
 
 Use the app for classroom demonstrations, practical experiments, sports motion studies, pendulum investigations, projectile motion, collisions, and independent STEM projects. Select graph axes and data views that fit your experiment, then inspect the results in tables and analysis panels.
 
-Physics Tracker also includes light-intensity analysis. Measure grayscale or red, green, and blue intensity from a paused video frame or from a picture selected from your device. Use a point, line, or box to create intensity profiles, compare multiple regions, and export the results.
+PhyZX also includes light-intensity analysis. Measure grayscale or red, green, and blue intensity from a paused video frame or from a picture selected from your device. Use a point, line, or box to create intensity profiles, compare multiple regions, and export the results.
 
 Export your work as CSV, Excel, or PDF. PDF graphs include a clear title, named X- and Y-axes, units, a legend, and visible numeric ranges so results remain understandable when shared or printed.
 
-Your experiment content is processed on your device. Physics Tracker does not include ads, analytics, or a developer-operated cloud account.
+Your experiment content is processed on your device. PhyZX does not include ads, analytics, or a developer-operated cloud account.
 
 ## Screenshots and graphics to upload
 
@@ -74,7 +74,7 @@ Complete the Play Console content-rating questionnaire truthfully. The app is an
 1. Back up `upload-keystore.jks` and the ignored `keystore.properties` file in a secure private location. They are required for future app updates.
 2. Confirm that the public user guide and privacy policy open at `https://ishwrknt.github.io/physics-tracker-site/`.
 3. Create the app in Google Play Console with package name `com.physicstracker`.
-4. Enrol in Play App Signing. Upload `PhysicsTracker-release.aab` from the project root as the first release artifact.
+4. Enrol in Play App Signing. Upload `PhyZX-release.aab` from the project root as the first release artifact.
 5. Add the store listing copy and final screenshots/feature graphic.
 6. Complete App content, Data safety, Ads, Content rating, and Target audience sections truthfully.
 7. Set countries/regions, pricing, and any required developer contact details.
