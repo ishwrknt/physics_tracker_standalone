@@ -7529,7 +7529,21 @@ private fun WorkspaceOverlayPanels(
             timeC = lightTimeSeriesC,
             timeD = lightTimeSeriesD,
             onClearTimeSeries = onClearLightTimeSeries,
-            modifier = panelModifier
+            modifier = if (isLandscape) {
+                Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxWidth(0.38f)
+                    .fillMaxHeight(0.82f)
+                    .padding(top = 62.dp, end = 8.dp, bottom = 12.dp)
+                    .zIndex(9f)
+            } else {
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .heightIn(max = 430.dp)
+                    .padding(horizontal = 8.dp, bottom = dataPanelBottomPadding)
+                    .zIndex(9f)
+            }
         )
     }
 }

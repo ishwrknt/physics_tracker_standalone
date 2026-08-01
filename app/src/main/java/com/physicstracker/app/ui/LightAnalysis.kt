@@ -635,7 +635,10 @@ fun FloatingLightPanel(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f, fill = false)
+                    // Keep the long control sets inside the reserved panel.
+                    // The remaining area scrolls instead of increasing the
+                    // overlay height and covering the video workspace.
+                    .weight(1f)
                     .verticalScroll(detailsScroll),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
