@@ -108,6 +108,33 @@ private data class ExportChartSeries(
     val color: Int
 )
 
+private data class ExportChartLabels(
+    val title: String,
+    val xAxis: String,
+    val yAxis: String
+)
+
+private fun exportAxisTitle(series: GraphSeries, unit: String): String = when (series) {
+    GraphSeries.TIME -> "Time (s)"
+    GraphSeries.X -> "Horizontal position ($unit)"
+    GraphSeries.Y -> "Vertical position ($unit)"
+    GraphSeries.VX -> "Horizontal velocity ($unit/s)"
+    GraphSeries.VY -> "Vertical velocity ($unit/s)"
+    GraphSeries.SPEED -> "Speed ($unit/s)"
+    GraphSeries.AX -> "Horizontal acceleration ($unit/s²)"
+    GraphSeries.AY -> "Vertical acceleration ($unit/s²)"
+    GraphSeries.ACCEL -> "Acceleration magnitude ($unit/s²)"
+    GraphSeries.SEPARATION -> "Separation between tracks ($unit)"
+    GraphSeries.RELATIVE_SPEED -> "Relative speed between tracks ($unit/s)"
+}
+
+private fun exportGraphLabels(series: GraphSeries, unit: String, titlePrefix: String = "Motion graph") =
+    ExportChartLabels(
+        title = "$titlePrefix: ${exportAxisTitle(series, unit)} versus time",
+        xAxis = "Time (s)",
+        yAxis = exportAxisTitle(series, unit)
+    )
+
 private fun sanitizeFileName(name: String): String =
     name.replace(Regex("[^A-Za-z0-9_-]"), "_").ifBlank { "physics_tracker" }
 
@@ -856,14 +883,24 @@ private fun appendLightPages(
     y += 20f
     y = drawWrappedLines(canvas, bodyPaint, lightAnalysis.geometrySummary, 40f, y, 1120f)
     y += 16f
+    val lightXAxis = if (lightAnalysis.modeLabel.contains("Time", ignoreCase = true)) {
+        "Time (s)"
+    } else {
+        "Position / distance (${lightAnalysis.unitLabel})"
+    }
+    val lightLabels = ExportChartLabels(
+        title = "Light intensity: ${lightAnalysis.modeLabel}",
+        xAxis = lightXAxis,
+        yAxis = "Intensity (0–255, ${lightAnalysis.channelLabel})"
+    )
     if (lightAnalysis.focusedSeries.size >= 2) {
-        drawSeriesChart(canvas, bodyPaint, 40f, y + 16f, 1120f, 300f, lightAnalysis.focusedSeries, AndroidColor.CYAN)
+        drawSeriesChart(canvas, bodyPaint, 40f, y + 16f, 1120f, 300f, lightAnalysis.focusedSeries, AndroidColor.CYAN, lightLabels)
         y += 340f
     }
     if (lightAnalysis.compareSeries.any { it.samples.size >= 2 }) {
         drawMultiSeriesChart(canvas, bodyPaint, 40f, y + 16f, 1120f, 260f, lightAnalysis.compareSeries.map {
             ExportChartSeries(it.label, it.samples, it.color)
-        })
+        }, lightLabels.copy(title = "Light intensity comparison: ${lightAnalysis.modeLabel}"))
         y += 300f
     }
     canvas.drawText("Stats", 40f, y, titlePaint)
@@ -972,7 +1009,8 @@ private fun drawSeriesChart(
     width: Float,
     height: Float,
     samples: List<GraphSample>,
-    color: Int
+    color: Int,
+    labels: ExportChartLabels
 ) {
     if (samples.size < 2) return
     val minX = samples.minOf { it.timeSeconds }
@@ -981,9 +1019,34 @@ private fun drawSeriesChart(
     val maxY = samples.maxOf { it.value }
     val dx = max(maxX - minX, 1e-6)
     val dy = max(maxY - minY, 1e-6)
+    val plotLeft = left + 72f
+    val plotTop = top + 34f
+    val plotRight = left + width - 18f
+    val plotBottom = top + height - 42f
+    val plotWidth = plotRight - plotLeft
+    val plotHeight = plotBottom - plotTop
     val axis = Paint(paint).apply { this.color = AndroidColor.argb(100, 255, 255, 255) }
-    canvas.drawLine(left, top + height, left + width, top + height, axis)
-    canvas.drawLine(left, top, left, top + height, axis)
+    val labelPaint = Paint(paint).apply {
+        this.color = AndroidColor.WHITE
+        textSize = 14f
+        isFakeBoldText = true
+    }
+    val tickPaint = Paint(paint).apply {
+        this.color = AndroidColor.LTGRAY
+        textSize = 11f
+    }
+    canvas.drawText(labels.title, left, top + 16f, labelPaint)
+    canvas.drawLine(plotLeft, plotBottom, plotRight, plotBottom, axis)
+    canvas.drawLine(plotLeft, plotTop, plotLeft, plotBottom, axis)
+    canvas.drawText(formatCalibratedValue(minX), plotLeft, plotBottom + 16f, tickPaint)
+    canvas.drawText(formatCalibratedValue(maxX), plotRight - tickPaint.measureText(formatCalibratedValue(maxX)), plotBottom + 16f, tickPaint)
+    canvas.drawText(formatCalibratedValue(maxY), 4f + left, plotTop + 4f, tickPaint)
+    canvas.drawText(formatCalibratedValue(minY), 4f + left, plotBottom, tickPaint)
+    canvas.drawText(labels.xAxis, plotLeft + (plotWidth - labelPaint.measureText(labels.xAxis)) / 2f, top + height - 4f, labelPaint)
+    canvas.save()
+    canvas.rotate(-90f, left + 16f, plotTop + plotHeight / 2f)
+    canvas.drawText(labels.yAxis, left + 16f - labelPaint.measureText(labels.yAxis) / 2f, plotTop + plotHeight / 2f, labelPaint)
+    canvas.restore()
     val linePaint = Paint(paint).apply {
         this.color = color
         strokeWidth = 3f
@@ -992,8 +1055,8 @@ private fun drawSeriesChart(
     }
     val path = android.graphics.Path()
     samples.forEachIndexed { index, sample ->
-        val x = left + (((sample.timeSeconds - minX) / dx) * width).toFloat()
-        val y = top + height - (((sample.value - minY) / dy) * height).toFloat()
+        val x = plotLeft + (((sample.timeSeconds - minX) / dx) * plotWidth).toFloat()
+        val y = plotBottom - (((sample.value - minY) / dy) * plotHeight).toFloat()
         if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
     }
     canvas.drawPath(path, linePaint)
@@ -1006,7 +1069,8 @@ private fun drawMultiSeriesChart(
     top: Float,
     width: Float,
     height: Float,
-    series: List<ExportChartSeries>
+    series: List<ExportChartSeries>,
+    labels: ExportChartLabels
 ) {
     val nonEmpty = series.filter { it.samples.size >= 2 }
     if (nonEmpty.isEmpty()) return
@@ -1017,9 +1081,31 @@ private fun drawMultiSeriesChart(
     val maxY = allSamples.maxOf { it.value }
     val dx = max(maxX - minX, 1e-6)
     val dy = max(maxY - minY, 1e-6)
+    val plotLeft = left + 72f
+    val plotTop = top + 34f
+    val plotRight = left + width - 18f
+    val plotBottom = top + height - 42f
+    val plotWidth = plotRight - plotLeft
+    val plotHeight = plotBottom - plotTop
     val axis = Paint(paint).apply { color = AndroidColor.argb(100, 255, 255, 255) }
-    canvas.drawLine(left, top + height, left + width, top + height, axis)
-    canvas.drawLine(left, top, left, top + height, axis)
+    val labelPaint = Paint(paint).apply {
+        color = AndroidColor.WHITE
+        textSize = 14f
+        isFakeBoldText = true
+    }
+    val tickPaint = Paint(paint).apply { color = AndroidColor.LTGRAY; textSize = 11f }
+    canvas.drawText(labels.title, left, top + 16f, labelPaint)
+    canvas.drawLine(plotLeft, plotBottom, plotRight, plotBottom, axis)
+    canvas.drawLine(plotLeft, plotTop, plotLeft, plotBottom, axis)
+    canvas.drawText(formatCalibratedValue(minX), plotLeft, plotBottom + 16f, tickPaint)
+    canvas.drawText(formatCalibratedValue(maxX), plotRight - tickPaint.measureText(formatCalibratedValue(maxX)), plotBottom + 16f, tickPaint)
+    canvas.drawText(formatCalibratedValue(maxY), 4f + left, plotTop + 4f, tickPaint)
+    canvas.drawText(formatCalibratedValue(minY), 4f + left, plotBottom, tickPaint)
+    canvas.drawText(labels.xAxis, plotLeft + (plotWidth - labelPaint.measureText(labels.xAxis)) / 2f, top + height - 4f, labelPaint)
+    canvas.save()
+    canvas.rotate(-90f, left + 16f, plotTop + plotHeight / 2f)
+    canvas.drawText(labels.yAxis, left + 16f - labelPaint.measureText(labels.yAxis) / 2f, plotTop + plotHeight / 2f, labelPaint)
+    canvas.restore()
     nonEmpty.forEachIndexed { index, chart ->
         val linePaint = Paint(paint).apply {
             color = chart.color
@@ -1029,8 +1115,8 @@ private fun drawMultiSeriesChart(
         }
         val path = android.graphics.Path()
         chart.samples.forEachIndexed { sampleIndex, sample ->
-            val x = left + (((sample.timeSeconds - minX) / dx) * width).toFloat()
-            val y = top + height - (((sample.value - minY) / dy) * height).toFloat()
+            val x = plotLeft + (((sample.timeSeconds - minX) / dx) * plotWidth).toFloat()
+            val y = plotBottom - (((sample.value - minY) / dy) * plotHeight).toFloat()
             if (sampleIndex == 0) path.moveTo(x, y) else path.lineTo(x, y)
         }
         canvas.drawPath(path, linePaint)
@@ -1039,7 +1125,7 @@ private fun drawMultiSeriesChart(
             textSize = 14f
             isFakeBoldText = true
         }
-        canvas.drawText(chart.label, left + 10f + index * 140f, top - 10f, legendPaint)
+        canvas.drawText(chart.label, plotLeft + index * 150f, plotTop + 16f, legendPaint)
     }
 }
 
@@ -1251,7 +1337,10 @@ private fun appendGraphPages(
     y += 18f
     focusedCanvas.drawText("Selected series: ${graphSeriesLabel(selectedSeries, displayedUnit)}", 40f, y, bodyPaint)
     y += 28f
-    drawMultiSeriesChart(focusedCanvas, bodyPaint, 50f, y + 20f, 1120f, 360f, focusedCharts)
+    drawMultiSeriesChart(
+        focusedCanvas, bodyPaint, 50f, y + 20f, 1120f, 360f, focusedCharts,
+        exportGraphLabels(selectedSeries, displayedUnit, "Focused motion graph")
+    )
     y += 420f
     profileResult?.let {
         y = drawProfileSummary(focusedCanvas, bodyPaint, y, "Focused Graph Fit", it)
@@ -1271,7 +1360,10 @@ private fun appendGraphPages(
         cy += 26f
         combinedCanvas.drawText("${graphSeriesLabel(selectedSeries, displayedUnit)}   $activeViewLabel", 40f, cy, bodyPaint)
         cy += 32f
-        drawMultiSeriesChart(combinedCanvas, bodyPaint, 50f, cy + 24f, 1120f, 430f, combinedCharts)
+        drawMultiSeriesChart(
+            combinedCanvas, bodyPaint, 50f, cy + 24f, 1120f, 430f, combinedCharts,
+            exportGraphLabels(selectedSeries, displayedUnit, "Track comparison")
+        )
         cy += 500f
         profileResult?.let {
             cy = drawProfileSummary(combinedCanvas, bodyPaint, cy, "Comparison Fit Context", it)
@@ -1294,7 +1386,10 @@ private fun appendGraphPages(
             rowCharts.forEachIndexed { index, chart ->
                 val left = if (index == 0) 50f else 625f
                 appendixCanvas.drawText(chart.label, left, ay, bodyPaint)
-                drawMultiSeriesChart(appendixCanvas, bodyPaint, left, ay + 28f, 520f, 250f, listOf(chart))
+                drawMultiSeriesChart(
+                    appendixCanvas, bodyPaint, left, ay + 28f, 520f, 250f, listOf(chart),
+                    exportGraphLabels(selectedSeries, displayedUnit, "${chart.label} motion graph")
+                )
             }
             ay += 330f
         }
@@ -1527,8 +1622,14 @@ private fun buildPdf(
     y += 24f
     val selectedSeriesSamples = graphSamplesForSeries(points, selectedSeries)
     val speedSamples = points.mapNotNull { it.speedValue?.let { speed -> GraphSample(it.timestampUs / 1_000_000.0, speed) } }
-    drawSeriesChart(canvas, bodyPaint, 40f, y + 10f, 520f, 220f, selectedSeriesSamples, AndroidColor.CYAN)
-    drawSeriesChart(canvas, bodyPaint, 640f, y + 10f, 520f, 220f, speedSamples, AndroidColor.YELLOW)
+    drawSeriesChart(
+        canvas, bodyPaint, 40f, y + 10f, 520f, 220f, selectedSeriesSamples, AndroidColor.CYAN,
+        exportGraphLabels(selectedSeries, displayedUnit, "Selected motion graph")
+    )
+    drawSeriesChart(
+        canvas, bodyPaint, 640f, y + 10f, 520f, 220f, speedSamples, AndroidColor.YELLOW,
+        exportGraphLabels(GraphSeries.SPEED, displayedUnit, "Speed graph")
+    )
     y += 252f
     canvas.drawText("Selected Graph Series: ${graphSeriesLabel(selectedSeries, displayedUnit)}", 40f, y, bodyPaint)
     y += 24f
