@@ -6514,6 +6514,21 @@ fun TrackingScreen(
                         .padding(top = dataPanelTopPadding, start = 8.dp, end = 8.dp, bottom = dataPanelBottomPadding)
                 }
             },
+            lightPanelModifier = if (isLandscape) {
+                Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxWidth(0.38f)
+                    .fillMaxHeight(0.82f)
+                    .padding(top = 62.dp, end = 8.dp, bottom = 12.dp)
+                    .zIndex(9f)
+            } else {
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .heightIn(max = 430.dp)
+                    .padding(start = 8.dp, end = 8.dp, bottom = dataPanelBottomPadding)
+                    .zIndex(9f)
+            },
             selectedGraphPlotPoints = selectedGraphPlotPoints,
             totalGraphPointCount = totalGraphPointCount,
             compareTrackAGraphPoints = compareTrackAGraphPoints,
@@ -7218,6 +7233,7 @@ private fun WorkspaceOverlayPanels(
     isPlaying: Boolean,
     isLandscape: Boolean,
     panelModifier: Modifier,
+    lightPanelModifier: Modifier,
     selectedGraphPlotPoints: List<GraphPlotPoint>,
     totalGraphPointCount: Int,
     compareTrackAGraphPoints: List<GraphPlotPoint>,
@@ -7529,21 +7545,7 @@ private fun WorkspaceOverlayPanels(
             timeC = lightTimeSeriesC,
             timeD = lightTimeSeriesD,
             onClearTimeSeries = onClearLightTimeSeries,
-            modifier = if (isLandscape) {
-                Modifier
-                    .align(Alignment.CenterEnd)
-                    .fillMaxWidth(0.38f)
-                    .fillMaxHeight(0.82f)
-                    .padding(top = 62.dp, end = 8.dp, bottom = 12.dp)
-                    .zIndex(9f)
-            } else {
-                Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .heightIn(max = 430.dp)
-                    .padding(horizontal = 8.dp, bottom = dataPanelBottomPadding)
-                    .zIndex(9f)
-            }
+            modifier = lightPanelModifier
         )
     }
 }
