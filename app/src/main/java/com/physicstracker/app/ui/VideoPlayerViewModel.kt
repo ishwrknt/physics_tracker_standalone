@@ -1,3 +1,5 @@
+@file:androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
+
 package com.physicstracker.app.ui
 
 import android.content.Context
@@ -714,12 +716,12 @@ class VideoPlayerViewModel @Inject constructor(
         }
     }
 
-    fun ensureCalibrationDefaults(canvasWidth: Float, canvasHeight: Float) {
+    fun ensureCalibrationDefaults(sourceWidth: Int, sourceHeight: Int) {
         val id = _projectId.value
-        if (id == -1L || calibration.value != null) return
-        val centerX = canvasWidth / 2.0
-        val centerY = canvasHeight / 2.0
-        val halfStick = canvasWidth.coerceAtLeast(240f) / 6.0
+        if (id == -1L || calibration.value != null || sourceWidth <= 0 || sourceHeight <= 0) return
+        val centerX = (sourceWidth - 1) / 2.0
+        val centerY = (sourceHeight - 1) / 2.0
+        val halfStick = sourceWidth.coerceAtLeast(240) / 6.0
         saveCalibration(
             CalibrationEntity(
                 projectId = id,
@@ -730,7 +732,10 @@ class VideoPlayerViewModel @Inject constructor(
                 knownDistanceMeters = 1.0,
                 calibrationUnit = "m",
                 originX = centerX,
-                originY = centerY
+                originY = centerY,
+                coordinateSpace = "SOURCE_VIDEO",
+                sourceWidth = sourceWidth,
+                sourceHeight = sourceHeight
             ),
             recordHistory = false
         )

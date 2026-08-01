@@ -14,6 +14,8 @@ import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import kotlin.math.max
 import kotlin.math.min
 
@@ -120,6 +122,176 @@ private fun escapeXml(value: String): String = value
     .replace("<", "&lt;")
     .replace(">", "&gt;")
     .replace("\"", "&quot;")
+
+private fun xlsxCell(value: Any?): String = when (value) {
+    null -> "<c/>"
+    is Number -> "<c><v>$value</v></c>"
+    is Boolean -> "<c t=\"b\"><v>${if (value) 1 else 0}</v></c>"
+    else -> "<c t=\"inlineStr\"><is><t>${escapeXml(value.toString())}</t></is></c>"
+}
+
+private fun xlsxSheet(rows: List<List<Any?>>): String {
+    val body = rows.mapIndexed { rowIndex, row ->
+        "<row r=\"${rowIndex + 1}\">${row.joinToString(separator = "", transform = ::xlsxCell)}</row>"
+    }.joinToString("")
+    return """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+          <sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
+          <sheetData>$body</sheetData>
+        </worksheet>""".trimIndent()
+}
+
+private fun xlsxObservationRows(
+    points: List<DisplayKinematicsPoint>,
+    unit: String
+): List<List<Any?>> = buildList {
+    add(
+        listOf(
+            "Tracker ID", "Tracker", "Frame", "Time (s)", "Requested timestamp (µs)",
+            "Actual timestamp (µs)", "X ($unit)", "Y ($unit)", "Vx ($unit/s)",
+            "Vy ($unit/s)", "Speed ($unit/s)", "Ax ($unit/s²)", "Ay ($unit/s²)",
+            "Acceleration ($unit/s²)", "Representation", "Observation", "Algorithm",
+            "Confidence", "Ambiguity", "Residual error (px)", "Manual correction",
+            "Coordinate space", "Gap"
+        )
+    )
+    points.forEach { point ->
+        add(
+            listOf(
+                point.trackerId,
+                point.trackLabel,
+                point.frameNumber,
+                point.timestampUs / 1_000_000.0,
+                point.requestedTimestampUs,
+                point.actualTimestampUs,
+                point.xValue,
+                point.yValue,
+                point.vxValue,
+                point.vyValue,
+                point.speedValue,
+                point.axValue,
+                point.ayValue,
+                point.accelerationValue,
+                point.dataRepresentation,
+                point.observationKind,
+                point.sourceAlgorithm,
+                point.confidence,
+                point.ambiguity,
+                point.residualErrorPx,
+                point.manualCorrection,
+                point.coordinateSpace,
+                point.gapLabel
+            )
+        )
+    }
+}
+
+private fun writeScientificXlsx(
+    file: File,
+    projectName: String,
+    displayedUnit: String,
+    rawPoints: List<DisplayKinematicsPoint>,
+    selectedPoints: List<DisplayKinematicsPoint>,
+    selectedSeries: GraphSeries,
+    activeViewLabel: String,
+    processingStrength: Float,
+    averagingWindow: Int,
+    calibration: CalibrationEntity?
+) {
+    val metadata = listOf(
+        listOf("Field", "Value"),
+        listOf("Project", projectName),
+        listOf("Exported at", formatAuditTimestamp(System.currentTimeMillis())),
+        listOf("Selected representation", selectedPoints.firstOrNull()?.dataRepresentation ?: "RAW"),
+        listOf("Processing strength", processingStrength),
+        listOf("Averaging window (samples)", averagingWindow),
+        listOf("Graph series", graphSeriesLabel(selectedSeries, displayedUnit)),
+        listOf("Active view", activeViewLabel),
+        listOf("Time axis", "Time (s)"),
+        listOf("Position unit", displayedUnit),
+        listOf("Velocity unit", "$displayedUnit/s"),
+        listOf("Acceleration unit", "$displayedUnit/s²"),
+        listOf("Calibration distance", calibration?.let { "${displayCalibrationDistance(it)} ${it.calibrationUnit}" } ?: "None"),
+        listOf("Calibration coordinate space", calibration?.coordinateSpace ?: "None")
+    )
+    val statistics = buildList {
+        add(listOf("Tracker", "Samples", "First frame", "Last frame", "Mean speed ($displayedUnit/s)", "Maximum acceleration ($displayedUnit/s²)"))
+        trackSummaries(selectedPoints).forEach { summary ->
+            add(
+                listOf(
+                    summary.trackLabel,
+                    summary.sampleCount,
+                    summary.frameStart,
+                    summary.frameEnd,
+                    summary.avgSpeed,
+                    summary.maxAcceleration
+                )
+            )
+        }
+    }
+    val quality = buildList {
+        add(listOf("Tracker", "Frame", "Status", "Confidence", "Algorithm", "Manual correction", "Gap"))
+        selectedPoints.forEach { point ->
+            add(
+                listOf(
+                    point.trackLabel,
+                    point.frameNumber,
+                    point.observationKind,
+                    point.confidence,
+                    point.sourceAlgorithm,
+                    point.manualCorrection,
+                    point.gapLabel
+                )
+            )
+        }
+    }
+    val sheets = listOf(
+        "Metadata" to xlsxSheet(metadata),
+        "Raw observations" to xlsxSheet(xlsxObservationRows(rawPoints, displayedUnit)),
+        "Selected representation" to xlsxSheet(xlsxObservationRows(selectedPoints, displayedUnit)),
+        "Statistics" to xlsxSheet(statistics),
+        "Quality information" to xlsxSheet(quality)
+    )
+    ZipOutputStream(FileOutputStream(file)).use { zip ->
+        fun entry(path: String, content: String) {
+            zip.putNextEntry(ZipEntry(path))
+            zip.write(content.toByteArray(Charsets.UTF_8))
+            zip.closeEntry()
+        }
+        entry(
+            "[Content_Types].xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+              <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+              <Default Extension="xml" ContentType="application/xml"/>
+              <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+              ${sheets.indices.joinToString("") { "<Override PartName=\"/xl/worksheets/sheet${it + 1}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>" }}
+            </Types>""".trimIndent()
+        )
+        entry(
+            "_rels/.rels",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+              <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+            </Relationships>""".trimIndent()
+        )
+        entry(
+            "xl/workbook.xml",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+              <sheets>${sheets.mapIndexed { index, sheet -> "<sheet name=\"${escapeXml(sheet.first)}\" sheetId=\"${index + 1}\" r:id=\"rId${index + 1}\"/>" }.joinToString("")}</sheets>
+            </workbook>""".trimIndent()
+        )
+        entry(
+            "xl/_rels/workbook.xml.rels",
+            """<?xml version="1.0" encoding="UTF-8"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+              ${sheets.indices.joinToString("") { "<Relationship Id=\"rId${it + 1}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet${it + 1}.xml\"/>" }}
+            </Relationships>""".trimIndent()
+        )
+        sheets.forEachIndexed { index, sheet -> entry("xl/worksheets/sheet${index + 1}.xml", sheet.second) }
+    }
+}
 
 private fun trackSummaries(points: List<DisplayKinematicsPoint>): List<ExportTrackSummary> =
     points.groupBy { it.trackLabel }
@@ -1450,6 +1622,7 @@ fun exportExperimentArtifacts(
     projectName: String,
     displayedUnit: String,
     points: List<DisplayKinematicsPoint>,
+    rawPoints: List<DisplayKinematicsPoint>,
     trackAPoints: List<DisplayKinematicsPoint>,
     trackBPoints: List<DisplayKinematicsPoint>,
     calibration: CalibrationEntity?,
@@ -1465,6 +1638,8 @@ fun exportExperimentArtifacts(
     photogateSummary: ExportPhotogateSummary?,
     twoBodySummary: ExportTwoBodySummary?,
     lightAnalysis: LightAnalysisExport? = null,
+    processingStrength: Float,
+    averagingWindow: Int,
     trimStartMs: Long,
     lastCheckpointSavedAt: Long?
 ): ExportArtifacts {
@@ -1472,7 +1647,7 @@ fun exportExperimentArtifacts(
     if (!baseDir.exists()) baseDir.mkdirs()
     val stamp = exportTimestamp()
     val csvFile = File(baseDir, "${sanitizeFileName(projectName)}_$stamp.csv")
-    val excelFile = File(baseDir, "${sanitizeFileName(projectName)}_$stamp.xls")
+    val excelFile = File(baseDir, "${sanitizeFileName(projectName)}_$stamp.xlsx")
     val pdfFile = File(baseDir, "${sanitizeFileName(projectName)}_$stamp.pdf")
     val auditFile = File(baseDir, "${sanitizeFileName(projectName)}_$stamp.audit.txt")
     val auditLog = buildAuditLog(
@@ -1493,8 +1668,32 @@ fun exportExperimentArtifacts(
         lastCheckpointSavedAt = lastCheckpointSavedAt
     )
 
-    csvFile.writeText(appendLightCsvSection(buildCsvContent(projectName, displayedUnit, points, photogateSummary, twoBodySummary), lightAnalysis))
-    excelFile.writeText(buildExcelXml(projectName, displayedUnit, points, photogateSummary, twoBodySummary, lightAnalysis))
+    csvFile.writeText(
+        appendLightCsvSection(
+            buildCsvContent(
+                projectName,
+                displayedUnit,
+                points,
+                photogateSummary,
+                twoBodySummary,
+                processingStrength,
+                averagingWindow
+            ),
+            lightAnalysis
+        )
+    )
+    writeScientificXlsx(
+        file = excelFile,
+        projectName = projectName,
+        displayedUnit = displayedUnit,
+        rawPoints = rawPoints,
+        selectedPoints = points,
+        selectedSeries = selectedSeries,
+        activeViewLabel = activeViewLabel,
+        processingStrength = processingStrength,
+        averagingWindow = averagingWindow,
+        calibration = calibration
+    )
     auditFile.writeText(auditLog.content)
     val pdf = buildPdf(
         context,

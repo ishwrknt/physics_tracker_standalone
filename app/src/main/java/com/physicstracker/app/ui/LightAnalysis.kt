@@ -897,6 +897,9 @@ fun LightTopTray(
     timeRecording: Boolean,
     onTimeRecordingToggle: () -> Unit,
     onClearTimeSeries: () -> Unit,
+    hasUploadedImage: Boolean,
+    onPickImage: () -> Unit,
+    onClearUploadedImage: () -> Unit,
     slotAColor: Color,
     slotBColor: Color,
     modifier: Modifier = Modifier
@@ -929,6 +932,14 @@ fun LightTopTray(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                LightDeckButton("IMAGE", selected = hasUploadedImage, accent = Color(0xFF58D5F7)) {
+                    onPickImage()
+                }
+                if (hasUploadedImage) {
+                    LightDeckButton("VIDEO", accent = Color(0xFFB0BEC5)) {
+                        onClearUploadedImage()
+                    }
+                }
                 LightTool.values().forEach { tool ->
                     LightDeckButton(tool.name, selected = lightTool == tool, accent = Color(0xFFF2C66D)) {
                         onLightToolSelected(tool)

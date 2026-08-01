@@ -47,6 +47,7 @@ fun EnhancedVideoControls(
     buttonSize: Float = 1.0f,
     hapticFeedback: Boolean = true
 ) {
+    val isPlaying by viewModel.isPlaying.collectAsState()
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
     val screenWidth = configuration.screenWidthDp.dp
@@ -123,7 +124,7 @@ fun EnhancedVideoControls(
             
             // Enhanced Play/Pause button
             EnhancedPlayPauseButton(
-                isPlaying = viewModel.isPlaying.value,
+                isPlaying = isPlaying,
                 onClick = { 
                     if (hapticFeedback) triggerHapticFeedback(context)
                     viewModel.togglePlayPause() 

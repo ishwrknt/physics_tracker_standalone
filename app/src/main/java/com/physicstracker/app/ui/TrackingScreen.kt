@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Rect
 import android.net.Uri
 import android.os.Handler
@@ -65,6 +66,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
@@ -85,6 +87,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.zIndex
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import android.view.LayoutInflater
 import com.physicstracker.app.R
@@ -210,6 +213,41 @@ private enum class MajorMode { TRACK, CAL, EDIT, DATA, LIGHT }
 private enum class TopPanelTab { OPTIONS, TRACKERS, SETTINGS }
 private enum class TrackerPanelSection { MODES, MODELS }
 private enum class DataPanelMode { TABLE, GRAPH, ANALYSIS }
+
+private class FloatingWindowGeometry(
+    initialX: Float,
+    initialY: Float,
+    initialWidth: Float,
+    initialHeight: Float
+) {
+    var x by mutableFloatStateOf(initialX)
+    var y by mutableFloatStateOf(initialY)
+    var width by mutableFloatStateOf(initialWidth)
+    var height by mutableFloatStateOf(initialHeight)
+}
+
+private class TrackingFloatingWindows(isLandscape: Boolean) {
+    var showGraph by mutableStateOf(false)
+    var showTable by mutableStateOf(false)
+    val graph = FloatingWindowGeometry(
+        if (isLandscape) 0.025f else 0.05f,
+        if (isLandscape) 0.12f else 0.16f,
+        if (isLandscape) 0.60f else 0.90f,
+        if (isLandscape) 0.70f else 0.60f
+    )
+    val table = FloatingWindowGeometry(
+        if (isLandscape) 0.10f else 0.04f,
+        if (isLandscape) 0.20f else 0.24f,
+        if (isLandscape) 0.54f else 0.92f,
+        if (isLandscape) 0.58f else 0.52f
+    )
+    val precision = FloatingWindowGeometry(
+        if (isLandscape) 0.57f else 0.04f,
+        if (isLandscape) 0.03f else 0.08f,
+        if (isLandscape) 0.42f else 0.92f,
+        if (isLandscape) 0.48f else 0.28f
+    )
+}
 private enum class GraphDrawerPanel { SERIES, PROFILE, ENHANCE, VIEW, STATS }
 private enum class AxisInspector { X, Y }
 private enum class AnalysisMainTab(val label: String) {
@@ -1124,7 +1162,9 @@ fun buildCsvContent(
     displayedUnit: String,
     points: List<DisplayKinematicsPoint>,
     photogateSummary: ExportPhotogateSummary? = null,
-    twoBodySummary: ExportTwoBodySummary? = null
+    twoBodySummary: ExportTwoBodySummary? = null,
+    processingStrength: Float = 0f,
+    averagingWindow: Int = 1
 ): String {
     val header = listOf(
         "project",
@@ -1133,6 +1173,8 @@ fun buildCsvContent(
         "time_s",
         "tracker_id",
         "data_representation",
+        "filter_strength",
+        "averaging_window_samples",
         "observation_kind",
         "source_algorithm",
         "confidence",
@@ -1212,6 +1254,8 @@ fun buildCsvContent(
             formatSeconds(point.timestampUs),
             point.trackerId,
             point.dataRepresentation,
+            formatCalibratedValue(processingStrength.toDouble()),
+            averagingWindow.toString(),
             point.observationKind,
             point.sourceAlgorithm,
             point.confidence?.let(::formatCalibratedValue) ?: "",
@@ -2003,7 +2047,8 @@ fun TrackingScreen(
     var selectedPointId by remember { mutableLongStateOf(-1L) }
     var showClearConfirm by remember { mutableStateOf(false) }
     var showExitConfirm by remember { mutableStateOf(false) }
-    var showDataTable by rememberSaveable { mutableStateOf(true) }
+    var showDataTable by rememberSaveable { mutableStateOf(false) }
+    val floatingWindows = remember(isLandscape) { TrackingFloatingWindows(isLandscape) }
     var dataPanelMode by rememberSaveable { mutableStateOf(DataPanelMode.TABLE) }
     var topPanelTab by rememberSaveable { mutableStateOf<TopPanelTab?>(null) }
     var trackerPanelSection by rememberSaveable { mutableStateOf(TrackerPanelSection.MODES) }
@@ -2023,11 +2068,13 @@ fun TrackingScreen(
     var activeTrack by rememberSaveable { mutableStateOf(ActiveTrack.A) }
     var multiTrackEnabled by rememberSaveable { mutableStateOf(false) }
     var showMagnifier by rememberSaveable { mutableStateOf(false) }
-    var videoZoomEnabled by rememberSaveable { mutableStateOf(true) }
+    // Start with a fitted, aspect-ratio-safe scientific view.
+    var videoZoomEnabled by rememberSaveable { mutableStateOf(false) }
     var videoScale by rememberSaveable { mutableFloatStateOf(1f) }
     var videoScaleSlider by rememberSaveable { mutableFloatStateOf(1f) }
     var videoOffsetX by rememberSaveable { mutableFloatStateOf(0f) }
     var videoOffsetY by rememberSaveable { mutableFloatStateOf(0f) }
+    var sidebarWidthFraction by rememberSaveable { mutableFloatStateOf(0.32f) }
     var autoTrackEnabled by rememberSaveable { mutableStateOf(false) }
     var autoTrackRunning by rememberSaveable { mutableStateOf(false) }
     var autoTrackAwaitingSeed by rememberSaveable { mutableStateOf(false) }
@@ -2135,6 +2182,7 @@ fun TrackingScreen(
     var lightSmooth by rememberSaveable { mutableStateOf(true) }
     var lightDetectPeaks by rememberSaveable { mutableStateOf(false) }
     var lightTimeRecording by rememberSaveable { mutableStateOf(false) }
+    var lightSourceImage by remember { mutableStateOf<Bitmap?>(null) }
     var lightGeometryA by remember { mutableStateOf<LightGeometry?>(null) }
     var lightGeometryB by remember { mutableStateOf<LightGeometry?>(null) }
     var lightGeometryC by remember { mutableStateOf<LightGeometry?>(null) }
@@ -2160,6 +2208,21 @@ fun TrackingScreen(
     val editMode = majorMode == MajorMode.EDIT
     val dataMode = majorMode == MajorMode.DATA
     val lightMode = majorMode == MajorMode.LIGHT
+    val lightImagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { selectedUri ->
+            val bitmap = runCatching {
+                context.contentResolver.openInputStream(selectedUri)?.use(BitmapFactory::decodeStream)
+            }.getOrNull()
+            if (bitmap != null) {
+                lightSourceImage = bitmap
+                lightGeometryA = null
+                lightGeometryB = null
+                lightGeometryC = null
+                lightGeometryD = null
+                lightTimeRecording = false
+            }
+        }
+    }
     val analysisMode = dataMode && dataPanelMode == DataPanelMode.ANALYSIS
     LaunchedEffect(forceLandscapeMode) {
         orientationPrefs.edit().putBoolean("force_landscape", forceLandscapeMode).apply()
@@ -2204,6 +2267,13 @@ fun TrackingScreen(
             videoOffsetX = 0f
             videoOffsetY = 0f
         }
+    }
+    fun lockAndFitVideo() {
+        videoZoomEnabled = false
+        videoScale = 1f
+        videoScaleSlider = 1f
+        videoOffsetX = 0f
+        videoOffsetY = 0f
     }
     val trackAMassKg = trackPoints.firstOrNull { it.trackLabel == "A" }?.massKg ?: (trackAMassText.toDoubleOrNull() ?: 1.0)
     val trackBMassKg = trackPoints.firstOrNull { it.trackLabel == "B" }?.massKg ?: (trackBMassText.toDoubleOrNull() ?: 1.0)
@@ -2789,9 +2859,12 @@ fun TrackingScreen(
 
     LaunchedEffect(calibrationMode, canvasSize, displayedCalibration) {
         if (calibrationMode && displayedCalibration == null && canvasSize != IntSize.Zero) {
+            val calibrationSourceSize = sourceVideoSize.takeIf {
+                it.width > 0 && it.height > 0
+            } ?: canvasSize
             viewModel.ensureCalibrationDefaults(
-                canvasSize.width.toFloat(),
-                canvasSize.height.toFloat()
+                calibrationSourceSize.width,
+                calibrationSourceSize.height
             )
         }
     }
@@ -3040,18 +3113,10 @@ fun TrackingScreen(
             xSeries = selectedGraphSeriesX
         )
     }
-    val showLandscapeLiveGraph = remember(
-        isLandscape,
-        videoFocusMode,
-        trackMode,
-        lightMode
-    ) {
-        isLandscape &&
-            !videoFocusMode &&
-            trackMode &&
-            !lightMode
-    }
-    val useLandscapeSplit = isLandscape && !videoFocusMode
+    // Landscape uses a dedicated control rail. The video receives the larger
+    // pane and graphs/tables still open only when explicitly requested.
+    val showLandscapeLiveGraph = floatingWindows.showGraph
+    val useLandscapeSplit = isLandscape && !videoFocusMode && !analysisMode
     val primaryGraphTrackColor = remember(twoTrackMode, activeTrack, showGraphTrackA, showGraphTrackB, trackAColorArgb, trackBColorArgb) {
         when {
             !twoTrackMode -> overlayColorFromArgb(trackAColorArgb)
@@ -3243,6 +3308,12 @@ fun TrackingScreen(
             showGraphTrackB -> if (positionAverageEnabled) averagedTrackBDisplayPoints else trackBDisplayPoints
             else -> if (positionAverageEnabled) averagedTrackADisplayPoints else trackADisplayPoints
         }
+        val rawExportPoints = when {
+            !twoTrackMode -> displayTablePoints
+            showGraphTrackA && showGraphTrackB -> combinedTablePoints
+            showGraphTrackB -> trackBDisplayPoints
+            else -> trackADisplayPoints
+        }
         val exportTwoBodySummary = ExportTwoBodySummary(
             currentSeparation = currentTwoBodySample?.separationMeters?.div(displayedSeparationUnitFactor),
             minimumSeparation = minimumSeparation,
@@ -3320,6 +3391,7 @@ fun TrackingScreen(
                 projectName = projectName,
                 displayedUnit = displayedUnit,
                 points = exportPoints,
+                rawPoints = rawExportPoints,
                 trackAPoints = exportTrackAPoints,
                 trackBPoints = exportTrackBPoints,
                 calibration = calibration,
@@ -3341,6 +3413,12 @@ fun TrackingScreen(
                 ),
                 twoBodySummary = exportTwoBodySummary,
                 lightAnalysis = activeLightExport.takeIf { lightMode || lightProfileA.isNotEmpty() || lightProfileB.isNotEmpty() || lightTimeSeriesA.isNotEmpty() || lightTimeSeriesB.isNotEmpty() },
+                processingStrength = blendAlpha,
+                averagingWindow = if (positionAverageEnabled) {
+                    positionAverageWindowForStrength(blendAlpha)
+                } else {
+                    1
+                },
                 trimStartMs = trimStart,
                 lastCheckpointSavedAt = lastCheckpointSavedAt
             )
@@ -4266,6 +4344,7 @@ fun TrackingScreen(
 
     LaunchedEffect(
         lightMode,
+        lightSourceImage,
         playerViewRef,
         canvasSize,
         absoluteCurrentPos,
@@ -4279,14 +4358,16 @@ fun TrackingScreen(
         lightSmooth
     ) {
         if (!lightMode) return@LaunchedEffect
-        val currentActivity = activity ?: return@LaunchedEffect
-        val currentPlayerView = playerViewRef ?: return@LaunchedEffect
         if (canvasSize.width <= 1 || canvasSize.height <= 1) return@LaunchedEffect
         val geometryA = lightGeometryA ?: lightDefaultGeometry(lightTool, canvasSize, LightSlot.A).also { lightGeometryA = it }
         val geometryB = lightGeometryB ?: lightDefaultGeometry(lightTool, canvasSize, LightSlot.B).also { lightGeometryB = it }
         val geometryC = lightGeometryC ?: lightDefaultGeometry(lightTool, canvasSize, LightSlot.C).also { lightGeometryC = it }
         val geometryD = lightGeometryD ?: lightDefaultGeometry(lightTool, canvasSize, LightSlot.D).also { lightGeometryD = it }
-        val captured = capturePlayerBitmap(currentActivity, currentPlayerView) ?: return@LaunchedEffect
+        val captured = lightSourceImage ?: run {
+            val currentActivity = activity ?: return@LaunchedEffect
+            val currentPlayerView = playerViewRef ?: return@LaunchedEffect
+            capturePlayerBitmap(currentActivity, currentPlayerView) ?: return@LaunchedEffect
+        }
         lightProfileA = buildLightProfile(
             bitmap = captured,
             geometry = geometryA,
@@ -4457,6 +4538,7 @@ fun TrackingScreen(
     }
 
     LaunchedEffect(videoUri, projectName) {
+        lockAndFitVideo()
         viewModel.initializeProject(videoUri, projectName)
     }
 
@@ -4483,13 +4565,26 @@ fun TrackingScreen(
                 }
             }
     ) {
+        val reservedVideoTop = if (!analysisMode && !videoFocusMode && !useLandscapeSplit) {
+            with(localDensity) { topOverlayHeightPx.toDp() }
+        } else {
+            0.dp
+        }
+        val reservedVideoBottom = if (!analysisMode && !videoFocusMode && !useLandscapeSplit) {
+            with(localDensity) { bottomOverlayHeightPx.toDp() }
+        } else {
+            0.dp
+        }
         val videoPaneModifier = if (useLandscapeSplit) {
             Modifier
+                .padding(top = reservedVideoTop, bottom = reservedVideoBottom)
                 .fillMaxHeight()
-                .fillMaxWidth(0.55f)
+                .fillMaxWidth(0.68f)
                 .align(Alignment.CenterStart)
         } else {
-            Modifier.fillMaxSize()
+            Modifier
+                .padding(top = reservedVideoTop, bottom = reservedVideoBottom)
+                .fillMaxSize()
         }
         val sharedVideoModifier = videoPaneModifier
             .graphicsLayer {
@@ -4498,7 +4593,7 @@ fun TrackingScreen(
                 translationX = videoOffsetX
                 translationY = videoOffsetY
             }
-            .pointerInput(Unit) {
+            .pointerInput(videoZoomEnabled) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
                     var twoFingerGesture = false
@@ -4506,13 +4601,12 @@ fun TrackingScreen(
                         val event = awaitPointerEvent()
                         val pressedCount = event.changes.count { it.pressed }
                         if (pressedCount >= 2) twoFingerGesture = true
-                        if (twoFingerGesture && pressedCount >= 2) {
+                        if (videoZoomEnabled && twoFingerGesture && pressedCount >= 2) {
                             val zoom = event.calculateZoom()
                             val pan = event.calculatePan()
                             val newScale = (videoScale * zoom).coerceIn(1f, 6f)
                             val maxPanX = (size.width * (newScale - 1f) * 0.5f).coerceAtLeast(0f)
                             val maxPanY = (size.height * (newScale - 1f) * 0.5f).coerceAtLeast(0f)
-                            videoZoomEnabled = true
                             videoScale = newScale
                             videoScaleSlider = newScale
                             videoOffsetX = (videoOffsetX + pan.x).coerceIn(-maxPanX, maxPanX)
@@ -4524,17 +4618,25 @@ fun TrackingScreen(
                 }
             }
 
-        // Determine if we should show the video layer.
-        // Hide the video during pure GRAPH/ANALYSIS mode to give graphs maximum screen space.
-        val hideVideoForGraph = dataMode && dataPanelMode != DataPanelMode.TABLE && !lightMode && !graphFullScreen
+        // Analyze is the only workspace allowed to replace the video. Graph and table
+        // views in Track remain live, translucent overlays over the decoded frame.
+        val hideVideoForGraph = analysisMode
 
         // 1. VIDEO LAYER
-        if (!hideVideoForGraph) {
+        if (!hideVideoForGraph && lightMode && lightSourceImage != null) {
+            Image(
+                bitmap = lightSourceImage!!.asImageBitmap(),
+                contentDescription = "Selected light measurement image",
+                contentScale = ContentScale.Fit,
+                modifier = sharedVideoModifier
+            )
+        } else if (!hideVideoForGraph) {
             AndroidView(
                 factory = { context ->
                     val view = LayoutInflater.from(context).inflate(R.layout.physics_player_view, null) as PlayerView
                     view.apply {
                         player = viewModel.player
+                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                         setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
                         playerViewRef = this
                     }
@@ -4737,38 +4839,6 @@ fun TrackingScreen(
                                 }
                                 return@detectDragGestures
                             }
-                            if (trackMode && autoTrackEnabled && trackingRoi?.locked == false) {
-                                val roi = trackingRoi ?: return@detectDragGestures
-                                val center = screenPointForSource(roi.center)
-                                val videoRect = videoDisplayRect(
-                                    sourceVideoSize.width.coerceAtLeast(1),
-                                    sourceVideoSize.height.coerceAtLeast(1),
-                                    canvasSize
-                                )
-                                val width = roi.widthPx * videoRect.width() / sourceVideoSize.width.coerceAtLeast(1)
-                                val height = roi.heightPx * videoRect.height() / sourceVideoSize.height.coerceAtLeast(1)
-                                val left = center.x - width / 2f
-                                val right = center.x + width / 2f
-                                val top = center.y - height / 2f
-                                val bottom = center.y + height / 2f
-                                val candidates = listOf(
-                                    TrackingRoiHandle.TOP_LEFT to Offset(left, top),
-                                    TrackingRoiHandle.TOP to Offset(center.x, top),
-                                    TrackingRoiHandle.TOP_RIGHT to Offset(right, top),
-                                    TrackingRoiHandle.LEFT to Offset(left, center.y),
-                                    TrackingRoiHandle.RIGHT to Offset(right, center.y),
-                                    TrackingRoiHandle.BOTTOM_LEFT to Offset(left, bottom),
-                                    TrackingRoiHandle.BOTTOM to Offset(center.x, bottom),
-                                    TrackingRoiHandle.BOTTOM_RIGHT to Offset(right, bottom)
-                                )
-                                draggedTrackingRoiHandle = candidates.minByOrNull { distanceBetween(overlayOffset, it.second) }
-                                    ?.takeIf { distanceBetween(overlayOffset, it.second) <= 28f * density }
-                                    ?.first
-                                    ?: TrackingRoiHandle.BODY.takeIf {
-                                        overlayOffset.x in left..right && overlayOffset.y in top..bottom
-                                    }
-                                if (draggedTrackingRoiHandle != null) return@detectDragGestures
-                            }
                             if (trackMode && autoTrackEnabled && (autoTrackSelectionMode || autoTrackAwaitingSeed)) {
                                 val resolvedPoint = pendingSeedScreenPoint
                                     ?: selectionPointFromTouch(overlayOffset, canvasSize, autoSelectTouchOffsetPx)
@@ -4907,7 +4977,8 @@ fun TrackingScreen(
                                 val point = trackPoints.find { it.id == selectedPointId }
                                 val draft = draggedPointDraft
                                 if (point != null && draft != null) {
-                                    viewModel.updatePoint(point, draft.x.toDouble(), draft.y.toDouble())
+                                    val source = sourcePointForScreen(draft)
+                                    viewModel.updateSourcePoint(point, source.x.toDouble(), source.y.toDouble())
                                 }
                             }
                             draggedCalibrationHandle = null
@@ -5197,36 +5268,6 @@ fun TrackingScreen(
                     else -> trackBaseColor.copy(alpha = 0.9f)
                 }
 
-                if (isSelected) {
-                    drawCircle(color = baseColor.copy(alpha = 0.10f), radius = 14.dp.toPx(), center = Offset(px, py), style = Fill)
-                }
-
-                drawCircle(
-                    color = baseColor.copy(alpha = opacity),
-                    radius = if (isSelected) 4.dp.toPx() else if (isActive) 3.25.dp.toPx() else 2.2.dp.toPx(),
-                    center = Offset(px, py)
-                )
-                if (isUncertain) {
-                    val arm = 6.dp.toPx()
-                    drawLine(baseColor, Offset(px - arm, py - arm), Offset(px + arm, py + arm), 1.2.dp.toPx())
-                    drawLine(baseColor, Offset(px - arm, py + arm), Offset(px + arm, py - arm), 1.2.dp.toPx())
-                }
-
-                drawCircle(
-                    color = baseColor.copy(alpha = opacity),
-                    radius = if (isSelected) 12.dp.toPx() else if (isActive) 9.dp.toPx() else 4.8.dp.toPx(),
-                    center = Offset(px, py),
-                    style = Stroke(width = if (isActive || isSelected) 1.25.dp.toPx() else 0.9.dp.toPx())
-                )
-
-                if (isSelected) {
-                    val handleOffset = 56.dp.toPx()
-                    drawLine(baseColor.copy(0.7f), Offset(px, py), Offset(px, py + handleOffset), 1.dp.toPx())
-                    drawCircle(baseColor.copy(alpha = 0.10f), 14.dp.toPx(), Offset(px, py + handleOffset), style = Fill)
-                    drawCircle(baseColor, 12.dp.toPx(), Offset(px, py + handleOffset), style = Stroke(1.1.dp.toPx()))
-                    drawLine(baseColor, Offset(px - 4.dp.toPx(), py + handleOffset), Offset(px + 4.dp.toPx(), py + handleOffset), 1.dp.toPx())
-                    drawLine(baseColor, Offset(px, py + handleOffset - 4.dp.toPx()), Offset(px, py + handleOffset + 4.dp.toPx()), 1.dp.toPx())
-                }
                 if (twoTrackMode) {
                     drawIntoCanvas { canvas ->
                         val paint = android.graphics.Paint().apply {
@@ -5243,163 +5284,43 @@ fun TrackingScreen(
             if (trackMode && !autoTrackEnabled && manualPendingPoint != null) {
                 val pending = manualPendingPoint ?: Offset.Zero
                 val selectorColor = overlayColorFromArgb(manualSelectorColorArgb)
-                val centerGap = 3.dp.toPx()
-                val handleCenter = manualHandleCenter(pending, canvasSize, manualHandleLiftPx)
-                drawCircle(
-                    color = selectorColor.copy(alpha = 0.14f),
-                    radius = 16.dp.toPx(),
-                    center = pending,
-                    style = Fill
-                )
-                drawCircle(
-                    color = selectorColor,
-                    radius = 9.dp.toPx(),
-                    center = pending,
-                    style = Stroke(width = 1.2.dp.toPx())
-                )
-                drawLine(
-                    selectorColor,
-                    Offset(pending.x - 12.dp.toPx(), pending.y),
-                    Offset(pending.x - centerGap, pending.y),
-                    1.1.dp.toPx()
-                )
-                drawLine(
-                    selectorColor,
-                    Offset(pending.x + centerGap, pending.y),
-                    Offset(pending.x + 12.dp.toPx(), pending.y),
-                    1.1.dp.toPx()
-                )
-                drawLine(
-                    selectorColor,
-                    Offset(pending.x, pending.y - 12.dp.toPx()),
-                    Offset(pending.x, pending.y - centerGap),
-                    1.1.dp.toPx()
-                )
-                drawLine(
-                    selectorColor,
-                    Offset(pending.x, pending.y + centerGap),
-                    Offset(pending.x, pending.y + 12.dp.toPx()),
-                    1.1.dp.toPx()
-                )
-                drawLine(
-                    selectorColor.copy(alpha = 0.72f),
-                    pending,
-                    handleCenter,
-                    1.dp.toPx()
-                )
-                drawCircle(
-                    color = selectorColor.copy(alpha = 0.12f),
-                    radius = 14.dp.toPx(),
-                    center = handleCenter,
-                    style = Fill
-                )
-                drawCircle(
-                    color = selectorColor,
-                    radius = 12.dp.toPx(),
-                    center = handleCenter,
-                    style = Stroke(width = 1.1.dp.toPx())
-                )
-                drawLine(
-                    selectorColor,
-                    Offset(handleCenter.x - 5.dp.toPx(), handleCenter.y),
-                    Offset(handleCenter.x + 5.dp.toPx(), handleCenter.y),
-                    1.dp.toPx()
-                )
-                drawLine(
-                    selectorColor,
-                    Offset(handleCenter.x, handleCenter.y - 5.dp.toPx()),
-                    Offset(handleCenter.x, handleCenter.y + 5.dp.toPx()),
-                    1.dp.toPx()
-                )
+                val centerGap = 2.dp.toPx()
+                val arm = 9.dp.toPx()
+                val stroke = 1.35.dp.toPx()
+                val haloStroke = 2.7.dp.toPx()
+                drawCircle(selectorColor.copy(alpha = 0.14f), 7.dp.toPx(), pending, style = Fill)
+                drawCircle(Color.Black.copy(alpha = 0.72f), 6.dp.toPx(), pending, style = Stroke(width = haloStroke))
+                drawCircle(selectorColor, 5.5.dp.toPx(), pending, style = Stroke(width = stroke))
+                drawLine(Color.Black.copy(alpha = 0.72f), Offset(pending.x - arm, pending.y), Offset(pending.x - centerGap, pending.y), haloStroke)
+                drawLine(Color.Black.copy(alpha = 0.72f), Offset(pending.x + centerGap, pending.y), Offset(pending.x + arm, pending.y), haloStroke)
+                drawLine(Color.Black.copy(alpha = 0.72f), Offset(pending.x, pending.y - arm), Offset(pending.x, pending.y - centerGap), haloStroke)
+                drawLine(Color.Black.copy(alpha = 0.72f), Offset(pending.x, pending.y + centerGap), Offset(pending.x, pending.y + arm), haloStroke)
+                drawLine(selectorColor, Offset(pending.x - arm, pending.y), Offset(pending.x - centerGap, pending.y), stroke)
+                drawLine(selectorColor, Offset(pending.x + centerGap, pending.y), Offset(pending.x + arm, pending.y), stroke)
+                drawLine(selectorColor, Offset(pending.x, pending.y - arm), Offset(pending.x, pending.y - centerGap), stroke)
+                drawLine(selectorColor, Offset(pending.x, pending.y + centerGap), Offset(pending.x, pending.y + arm), stroke)
             }
             if (trackMode && autoTrackEnabled) {
                 pendingSeedScreenPoint?.let { pending ->
-                    val pendingColor = overlayColorFromArgb(manualSelectorColorArgb)
-                    val supportRadius = if (seedLockMode == SeedLockMode.EXACT_PIXEL) 18.dp.toPx() else 24.dp.toPx()
-                    val lineStroke = if (showMagnifier || autoTrackSelectionMode) 0.8.dp.toPx() else 1.2.dp.toPx()
-                    val centerGap = 3.2.dp.toPx()
-                    val handleCenter = autoSeedHandleCenter(pending, canvasSize, autoSeedHandleLiftPx)
-                    drawCircle(
-                        color = pendingColor.copy(alpha = 0.12f),
-                        radius = supportRadius,
-                        center = pending,
-                        style = Fill
-                    )
-                    drawCircle(
-                        color = pendingColor,
-                        radius = if (seedLockMode == SeedLockMode.EXACT_PIXEL) 8.dp.toPx() else 11.dp.toPx(),
-                        center = pending,
-                        style = Stroke(width = lineStroke)
-                    )
-                    drawCircle(
-                        color = pendingColor,
-                        radius = 3.6.dp.toPx(),
-                        center = pending,
-                        style = Stroke(width = lineStroke)
-                    )
-                    drawRect(
-                        color = pendingColor.copy(alpha = 0.24f),
-                        topLeft = Offset(pending.x - supportRadius, pending.y - supportRadius),
-                        size = Size(supportRadius * 2f, supportRadius * 2f),
-                        style = Stroke(width = lineStroke)
-                    )
-                    drawLine(
-                        pendingColor,
-                        Offset(pending.x - 14.dp.toPx(), pending.y),
-                        Offset(pending.x - centerGap, pending.y),
-                        lineStroke
-                    )
-                    drawLine(
-                        pendingColor,
-                        Offset(pending.x + centerGap, pending.y),
-                        Offset(pending.x + 14.dp.toPx(), pending.y),
-                        lineStroke
-                    )
-                    drawLine(
-                        pendingColor,
-                        Offset(pending.x, pending.y - 14.dp.toPx()),
-                        Offset(pending.x, pending.y - centerGap),
-                        lineStroke
-                    )
-                    drawLine(
-                        pendingColor,
-                        Offset(pending.x, pending.y + centerGap),
-                        Offset(pending.x, pending.y + 14.dp.toPx()),
-                        lineStroke
-                    )
-                    drawLine(
-                        pendingColor.copy(alpha = 0.72f),
-                        pending,
-                        handleCenter,
-                        lineStroke
-                    )
-                    drawCircle(
-                        color = pendingColor.copy(alpha = 0.12f),
-                        radius = 14.dp.toPx(),
-                        center = handleCenter,
-                        style = Fill
-                    )
-                    drawCircle(
-                        color = pendingColor,
-                        radius = 12.dp.toPx(),
-                        center = handleCenter,
-                        style = Stroke(width = 1.1.dp.toPx())
-                    )
-                    drawLine(
-                        pendingColor,
-                        Offset(handleCenter.x - 5.dp.toPx(), handleCenter.y),
-                        Offset(handleCenter.x + 5.dp.toPx(), handleCenter.y),
-                        1.dp.toPx()
-                    )
-                    drawLine(
-                        pendingColor,
-                        Offset(handleCenter.x, handleCenter.y - 5.dp.toPx()),
-                        Offset(handleCenter.x, handleCenter.y + 5.dp.toPx()),
-                        1.dp.toPx()
-                    )
+                    val color = overlayColorFromArgb(manualSelectorColorArgb)
+                    val gap = 2.dp.toPx()
+                    val arm = 10.dp.toPx()
+                    val stroke = 1.35.dp.toPx()
+                    val haloStroke = 2.7.dp.toPx()
+                    drawCircle(color.copy(alpha = 0.14f), 7.dp.toPx(), pending, style = Fill)
+                    drawCircle(Color.Black.copy(alpha = 0.72f), 6.dp.toPx(), pending, style = Stroke(width = haloStroke))
+                    drawCircle(color, 5.5.dp.toPx(), pending, style = Stroke(width = stroke))
+                    drawLine(Color.Black.copy(alpha = 0.72f), Offset(pending.x - arm, pending.y), Offset(pending.x - gap, pending.y), haloStroke)
+                    drawLine(Color.Black.copy(alpha = 0.72f), Offset(pending.x + gap, pending.y), Offset(pending.x + arm, pending.y), haloStroke)
+                    drawLine(Color.Black.copy(alpha = 0.72f), Offset(pending.x, pending.y - arm), Offset(pending.x, pending.y - gap), haloStroke)
+                    drawLine(Color.Black.copy(alpha = 0.72f), Offset(pending.x, pending.y + gap), Offset(pending.x, pending.y + arm), haloStroke)
+                    drawLine(color, Offset(pending.x - arm, pending.y), Offset(pending.x - gap, pending.y), stroke)
+                    drawLine(color, Offset(pending.x + gap, pending.y), Offset(pending.x + arm, pending.y), stroke)
+                    drawLine(color, Offset(pending.x, pending.y - arm), Offset(pending.x, pending.y - gap), stroke)
+                    drawLine(color, Offset(pending.x, pending.y + gap), Offset(pending.x, pending.y + arm), stroke)
                 }
                 trackingRoi?.let { roi ->
-                    if (autoTrackEnabled) {
+                    if (autoTrackSelectionMode && !roi.locked) {
                         val center = screenPointForSource(roi.center)
                         val videoRect = videoDisplayRect(
                             sourceVideoSize.width.coerceAtLeast(1),
@@ -5408,50 +5329,35 @@ fun TrackingScreen(
                         )
                         val width = roi.widthPx * videoRect.width() / sourceVideoSize.width.coerceAtLeast(1)
                         val height = roi.heightPx * videoRect.height() / sourceVideoSize.height.coerceAtLeast(1)
-                        val left = center.x - width / 2f
-                        val top = center.y - height / 2f
-                        val color = if (roi.locked) LabGold else LabAccent
-                        drawRect(color.copy(alpha = 0.10f), Offset(left, top), Size(width, height), style = Fill)
-                        drawRect(color, Offset(left, top), Size(width, height), style = Stroke(width = 2.dp.toPx()))
-                        val handles = listOf(
-                            Offset(left, top), Offset(center.x, top), Offset(left + width, top),
-                            Offset(left, center.y), Offset(left + width, center.y),
-                            Offset(left, top + height), Offset(center.x, top + height), Offset(left + width, top + height)
+                        drawRect(
+                            LabAccent.copy(alpha = 0.65f),
+                            Offset(center.x - width / 2f, center.y - height / 2f),
+                            Size(width, height),
+                            style = Stroke(width = 1.dp.toPx())
                         )
-                        handles.forEach { handle ->
-                            drawCircle(Color.Black.copy(alpha = 0.75f), 7.dp.toPx(), handle, style = Fill)
-                            drawCircle(color, 7.dp.toPx(), handle, style = Stroke(width = 2.dp.toPx()))
-                        }
                     }
                 }
                 autoTrackSeed?.let { seed ->
                     val center = videoToScreenOffset(seed.center, seed.sourceWidth, seed.sourceHeight, canvasSize)
-                    val supportRadius = seed.estimatedRadiusPx.coerceAtLeast(8f)
                     val lineStroke = if (showMagnifier || autoTrackSelectionMode) 0.8.dp.toPx() else 1.dp.toPx()
                     val centerGap = 3.dp.toPx()
                     val seedColor = overlayColorFromArgb(manualSelectorColorArgb)
                     drawCircle(
-                        color = seedColor.copy(alpha = 0.14f),
-                        radius = 18.dp.toPx(),
+                        color = seedColor.copy(alpha = 0.10f),
+                        radius = 7.dp.toPx(),
                         center = center,
                         style = Fill
                     )
                     drawCircle(
                         color = seedColor,
-                        radius = 9.dp.toPx(),
+                        radius = 5.dp.toPx(),
                         center = center,
                         style = Stroke(width = lineStroke)
                     )
                     drawCircle(
                         color = seedColor,
-                        radius = 3.4.dp.toPx(),
+                        radius = 2.5.dp.toPx(),
                         center = center,
-                        style = Stroke(width = lineStroke)
-                    )
-                    drawRect(
-                        color = seedColor.copy(alpha = 0.28f),
-                        topLeft = Offset(center.x - supportRadius, center.y - supportRadius),
-                        size = Size(supportRadius * 2f, supportRadius * 2f),
                         style = Stroke(width = lineStroke)
                     )
                     drawLine(
@@ -5711,11 +5617,35 @@ fun TrackingScreen(
         }
         }
 
+        if (!hideVideoForGraph && !analysisMode) {
+            FilledTonalButton(
+                onClick = {
+                    if (videoZoomEnabled) lockAndFitVideo() else videoZoomEnabled = true
+                },
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(start = 8.dp, top = reservedVideoTop + 8.dp)
+                    .size(40.dp)
+                    .zIndex(5f),
+                contentPadding = PaddingValues(0.dp),
+                colors = ButtonDefaults.filledTonalButtonColors(
+                    containerColor = PhysicsColorSurface.copy(alpha = 0.90f),
+                    contentColor = if (videoZoomEnabled) LabGold else PhysicsColorAccent
+                ),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text(if (videoZoomEnabled) "🔓" else "🔒", style = MaterialTheme.typography.labelLarge)
+            }
+        }
+
         // 3. UI Layer
+        val persistentPrecisionVisible =
+            (trackMode && (manualTrackingMode || (autoTrackEnabled && pendingSeedScreenPoint != null))) ||
+                (auxiliarySelectorActive && auxiliaryPrecisionPoint != null)
         val topChromeModifier = if (useLandscapeSplit) {
             Modifier
                 .align(Alignment.TopEnd)
-                .fillMaxWidth(0.45f)
+                .fillMaxWidth(sidebarWidthFraction)
         } else {
             Modifier
                 .align(Alignment.TopCenter)
@@ -5728,9 +5658,10 @@ fun TrackingScreen(
                 .onSizeChanged { topOverlayHeightPx = it.height }
                 .statusBarsPadding()
                 .padding(horizontal = 8.dp, vertical = 4.dp)
-                .zIndex(3f)
+                .zIndex(if (persistentPrecisionVisible) 9f else 3f)
         ) {
             val saveNeedsAttention = lastCheckpointSavedAt == null || canUndo || canRedo
+            if (!persistentPrecisionVisible) {
             Surface(
                 color = PhysicsColorSurface.copy(alpha = 0.98f),
                 shape = RoundedCornerShape(14.dp),
@@ -5785,127 +5716,6 @@ fun TrackingScreen(
                     }
                 }
             }
-            if (videoFocusMode && autoTrackEnabled && shouldShowCustomMagnifier && magnifierBitmap != null) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp)
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(end = 4.dp)
-                            .zIndex(3.4f),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.Top
-                    ) {
-                        Surface(
-                            color = PhysicsColorSurface.copy(alpha = 0.98f),
-                            shape = RoundedCornerShape(14.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, PhysicsColorDivider),
-                            modifier = Modifier.padding(top = 0.dp)
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(6.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Text(
-                                    text = "PIXEL ADJUST",
-                                    color = PhysicsColorAccent,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    listOf(1f, 2f, 5f).forEach { step ->
-                                        TextButton(
-                                            onClick = { seedNudgeStepPx = step },
-                                            colors = ButtonDefaults.textButtonColors(
-                                                containerColor = if (abs(seedNudgeStepPx - step) < 0.01f) {
-                                                    PhysicsColorAccent.copy(alpha = 0.22f)
-                                                } else {
-                                                    PhysicsColorSurfaceVariant.copy(alpha = 0.55f)
-                                                },
-                                                contentColor = if (abs(seedNudgeStepPx - step) < 0.01f) {
-                                                    PhysicsColorAccent
-                                                } else {
-                                                    PhysicsColorOnSurface
-                                                }
-                                            ),
-                                            shape = RoundedCornerShape(6.dp),
-                                            contentPadding = PaddingValues(horizontal = 7.dp, vertical = 2.dp)
-                                        ) {
-                                            Text("${step.toInt()} px", style = MaterialTheme.typography.labelSmall)
-                                        }
-                                    }
-                                }
-                                PrecisionDirectionPad(
-                                    enabled = precisionTargetPosition != null,
-                                    stepPx = seedNudgeStepPx,
-                                    onNudge = { dx, dy -> nudgePrecisionTarget(dx, dy) },
-                                    onConfirm = { confirmPrecisionTarget() }
-                                )
-                            }
-                        }
-                        Column(
-                            horizontalAlignment = Alignment.End,
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Surface(
-                                modifier = Modifier.size(132.dp),
-                                color = PhysicsColorSurface.copy(alpha = 0.98f),
-                                shape = RoundedCornerShape(14.dp),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, PhysicsColorDivider)
-                            ) {
-                                Box(modifier = Modifier.fillMaxSize()) {
-                                    Image(
-                                        bitmap = magnifierBitmap!!.asImageBitmap(),
-                                        contentDescription = null,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
-                                    Canvas(modifier = Modifier.fillMaxSize()) {
-                                        val cx = size.width / 2f
-                                        val cy = size.height / 2f
-                                        val gap = 5.dp.toPx()
-                                        val line = 0.8.dp.toPx()
-                                        val arm = 18.dp.toPx()
-                                        drawCircle(
-                                            color = PhysicsColorAccent.copy(alpha = 0.16f),
-                                            radius = 20.dp.toPx(),
-                                            center = Offset(cx, cy),
-                                            style = Fill
-                                        )
-                                        drawCircle(
-                                            color = PhysicsColorAccent,
-                                            radius = 10.dp.toPx(),
-                                            center = Offset(cx, cy),
-                                            style = Stroke(width = line)
-                                        )
-                                        drawLine(PhysicsColorAccent, Offset(cx - arm, cy), Offset(cx - gap, cy), line)
-                                        drawLine(PhysicsColorAccent, Offset(cx + gap, cy), Offset(cx + arm, cy), line)
-                                        drawLine(PhysicsColorAccent, Offset(cx, cy - arm), Offset(cx, cy - gap), line)
-                                        drawLine(PhysicsColorAccent, Offset(cx, cy + gap), Offset(cx, cy + arm), line)
-                                    }
-                                }
-                            }
-                            precisionTargetPixelPosition?.let { point ->
-                                Surface(
-                                    color = PhysicsColorSurface.copy(alpha = 0.94f),
-                                    shape = RoundedCornerShape(10.dp),
-                                    border = androidx.compose.foundation.BorderStroke(1.dp, PhysicsColorDivider)
-                                ) {
-                                    Text(
-                                        text = "X ${point.x.roundToInt()}  Y ${point.y.roundToInt()}",
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                        color = PhysicsColorOnSurface,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontFamily = FontFamily.Monospace
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
             }
             error?.let {
                 Text(
@@ -5933,7 +5743,7 @@ fun TrackingScreen(
         val bottomChromeModifier = if (useLandscapeSplit) {
             Modifier
                 .align(Alignment.BottomEnd)
-                .fillMaxWidth(0.45f)
+                .fillMaxWidth(sidebarWidthFraction)
         } else {
             Modifier
                 .align(Alignment.BottomCenter)
@@ -6005,7 +5815,7 @@ fun TrackingScreen(
                     color = Color.Black.copy(alpha = 0.86f),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .then(if (useLandscapeSplit) Modifier.heightIn(max = 260.dp) else Modifier)
+                        .heightIn(max = if (isLandscape) 260.dp else 360.dp)
                 ) {
                     Column(
                         modifier = Modifier
@@ -6037,7 +5847,12 @@ fun TrackingScreen(
                                     disableExistingPointSelection = disableExistingPointSelection,
                                     seedLockMode = seedLockMode,
                                     trackingStepOption = trackingStepOption,
+                                    canStepBackward = currentPos > 0L,
+                                    canStepForward = duration <= 0L || currentPos < duration - 1L,
+                                    onStepFrames = { frames -> viewModel.stepFrames(frames) },
                                     showDataTable = showDataTable,
+                                    showGraphOverlay = floatingWindows.showGraph,
+                                    showTableOverlay = floatingWindows.showTable,
                                     dataPanelMode = dataPanelMode,
                                     showGraphTrackA = showGraphTrackA,
                                     showGraphTrackB = showGraphTrackB,
@@ -6133,9 +5948,12 @@ fun TrackingScreen(
                                         trackTrayPanel = if (trackTrayPanel == TrackTrayPanel.STEP) null else TrackTrayPanel.STEP
                                     },
                                     onToggleData = {
-                                        majorMode = MajorMode.DATA
-                                        showDataTable = true
-                                        trackTrayPanel = if (trackTrayPanel == TrackTrayPanel.DATA) null else TrackTrayPanel.DATA
+                                        // Data is a secondary Track panel. Keep Track active so
+                                        // taps and drags still select and adjust tracker pixels.
+                                        majorMode = MajorMode.TRACK
+                                        val opening = trackTrayPanel != TrackTrayPanel.DATA
+                                        trackTrayPanel = if (opening) TrackTrayPanel.DATA else null
+                                        if (!opening) showDataTable = false
                                     },
                                     onShowClearConfirm = { showClearConfirm = true },
                                     onDeleteSelectedPoint = {
@@ -6219,16 +6037,18 @@ fun TrackingScreen(
                                     },
                                     onTrackingStepSelected = { trackingStepOption = it },
                                     onGraphMode = {
-                                        majorMode = MajorMode.DATA
-                                        showDataTable = true
+                                        majorMode = MajorMode.TRACK
+                                        floatingWindows.showGraph = !floatingWindows.showGraph
                                         dataPanelMode = DataPanelMode.GRAPH
-                                        trackTrayPanel = TrackTrayPanel.DATA  // keep tray open
+                                        graphFullScreen = false
+                                        trackTrayPanel = TrackTrayPanel.DATA
                                     },
                                     onTableMode = {
-                                        majorMode = MajorMode.DATA
-                                        showDataTable = true
+                                        majorMode = MajorMode.TRACK
+                                        floatingWindows.showTable = !floatingWindows.showTable
                                         dataPanelMode = DataPanelMode.TABLE
-                                        trackTrayPanel = TrackTrayPanel.DATA  // keep tray open
+                                        graphFullScreen = false
+                                        trackTrayPanel = TrackTrayPanel.DATA
                                     },
                                     onAnalysisMode = {
                                         majorMode = MajorMode.DATA
@@ -6283,18 +6103,24 @@ fun TrackingScreen(
                                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                                         BottomDeckButton("SCALE", selected = calibrationMode && calibrationTool == CalibrationTool.SCALE, accent = LabGold) {
                                             majorMode = MajorMode.CAL
+                                            showDataTable = false
+                                            graphFullScreen = false
                                             calibrationTool = CalibrationTool.SCALE
                                             auxiliaryPrecisionTarget = AuxiliaryPrecisionTarget.Calibration(CalibrationHandle.START)
                                             showMagnifier = true
                                         }
                                         BottomDeckButton("AXIS", selected = calibrationMode && calibrationTool == CalibrationTool.AXIS, accent = LabSuccess) {
                                             majorMode = MajorMode.CAL
+                                            showDataTable = false
+                                            graphFullScreen = false
                                             calibrationTool = CalibrationTool.AXIS
                                             auxiliaryPrecisionTarget = AuxiliaryPrecisionTarget.Calibration(CalibrationHandle.ORIGIN)
                                             showMagnifier = true
                                         }
                                         BottomDeckButton("MEASURE", selected = calibrationMode && calibrationTool == CalibrationTool.MEASURE, accent = overlayColorFromArgb(calibrationColorArgb)) {
                                             majorMode = MajorMode.CAL
+                                            showDataTable = false
+                                            graphFullScreen = false
                                             calibrationTool = CalibrationTool.MEASURE
                                             auxiliaryPrecisionTarget = AuxiliaryPrecisionTarget.Calibration(CalibrationHandle.START)
                                             showMagnifier = true
@@ -6482,6 +6308,15 @@ fun TrackingScreen(
                                     timeRecording = lightTimeRecording,
                                     onTimeRecordingToggle = { lightTimeRecording = !lightTimeRecording },
                                     onClearTimeSeries = ::clearAllLightTimeSeries,
+                                    hasUploadedImage = lightSourceImage != null,
+                                    onPickImage = { lightImagePicker.launch(arrayOf("image/*")) },
+                                    onClearUploadedImage = {
+                                        lightSourceImage = null
+                                        lightGeometryA = null
+                                        lightGeometryB = null
+                                        lightGeometryC = null
+                                        lightGeometryD = null
+                                    },
                                     slotAColor = overlayColorFromArgb(trackAColorArgb),
                                     slotBColor = overlayColorFromArgb(trackBColorArgb)
                                 )
@@ -6530,9 +6365,9 @@ fun TrackingScreen(
                                         showMagnifier = true
                                     },
                                     onVideoScaleChange = {
-                                        val newScale = it.coerceIn(1f, 6f)
-                                        videoZoomEnabled = it > 1.02f || videoZoomEnabled
-                                        clampVideoPan(newScale)
+                                        if (videoZoomEnabled) {
+                                            clampVideoPan(it.coerceIn(1f, 6f))
+                                        }
                                     },
                                     onVideoOffsetXChange = { fraction ->
                                         val maxPanX = maxVideoPanX().coerceAtLeast(1f)
@@ -6579,26 +6414,6 @@ fun TrackingScreen(
                             }
                                 null -> Unit
                             }
-                            if (auxiliarySelectorActive && auxiliaryPrecisionPoint != null && !manualTrackingMode) {
-                                val selectorColor = when (auxiliaryPrecisionTarget) {
-                                    is AuxiliaryPrecisionTarget.Calibration -> overlayColorFromArgb(calibrationColorArgb)
-                                    is AuxiliaryPrecisionTarget.Light -> LabAccent
-                                    is AuxiliaryPrecisionTarget.Photogate -> LabGold
-                                    null -> LabAccent
-                                }
-                                PrecisionInstrumentPanel(
-                                    title = "PRECISION",
-                                    trackColor = selectorColor,
-                                    magnifierBitmap = magnifierBitmap,
-                                    targetPosition = auxiliaryPrecisionPoint,
-                                    targetLabel = auxiliaryPrecisionLabel,
-                                    stepPx = seedNudgeStepPx,
-                                    canConfirm = true,
-                                    onStepChange = { seedNudgeStepPx = it },
-                                    onNudge = ::nudgeAuxiliaryPrecisionTarget,
-                                    onConfirm = ::confirmAuxiliaryPrecisionTarget
-                                )
-                            }
                         }
                         MainBottomNavRow(
                             activeBottomTab = activeBottomTab,
@@ -6608,6 +6423,9 @@ fun TrackingScreen(
                                 activeBottomTab = if (opening) BottomMainTab.CAL else null
                                 if (opening) {
                                     majorMode = MajorMode.CAL
+                                    showDataTable = false
+                                    graphFullScreen = false
+                                    videoFocusMode = false
                                     auxiliaryPrecisionTarget = AuxiliaryPrecisionTarget.Calibration(
                                         if (calibrationTool == CalibrationTool.AXIS) CalibrationHandle.ORIGIN else CalibrationHandle.START
                                     )
@@ -6624,7 +6442,14 @@ fun TrackingScreen(
                             onToggleTrack = {
                                 val opening = activeBottomTab != BottomMainTab.TRACK
                                 activeBottomTab = if (opening) BottomMainTab.TRACK else null
-                                if (opening) majorMode = MajorMode.TRACK
+                                if (opening) {
+                                    majorMode = MajorMode.TRACK
+                                    showDataTable = false
+                                    floatingWindows.showGraph = false
+                                    floatingWindows.showTable = false
+                                    graphFullScreen = false
+                                    videoFocusMode = false
+                                }
                             },
                             onTogglePlayPause = {
                                 activeBottomTab = BottomMainTab.PLAY
@@ -6670,22 +6495,19 @@ fun TrackingScreen(
             isPlaying = isPlaying,
             isLandscape = isLandscape,
             panelModifier = run {
-                // When video is hidden we want the graph to expand and fill the full screen.
-                val hideVideo = dataMode && dataPanelMode != DataPanelMode.TABLE && !lightMode
                 when {
                     analysisMode -> Modifier
                         .fillMaxSize()
                         .zIndex(20f)
-                    hideVideo && !useLandscapeSplit -> Modifier
-                        .fillMaxSize()
+                    (trackMode && floatingWindows.showGraph) || showLandscapeLiveGraph -> Modifier
+                        .offset(
+                            x = (configuration.screenWidthDp * floatingWindows.graph.x).dp,
+                            y = (configuration.screenHeightDp * floatingWindows.graph.y).dp
+                        )
+                        .width((configuration.screenWidthDp * floatingWindows.graph.width).dp)
+                        .height((configuration.screenHeightDp * floatingWindows.graph.height).dp)
                         .zIndex(6f)
-                        .padding(top = dataPanelTopPadding, start = 8.dp, end = 8.dp, bottom = dataPanelBottomPadding)
-                    useLandscapeSplit && (dataMode || showLandscapeLiveGraph || lightMode) -> Modifier
-                        .align(Alignment.TopEnd)
-                        .fillMaxWidth(if (dataPanelMode == DataPanelMode.ANALYSIS) 0.62f else 0.45f)
-                        .fillMaxHeight()
-                        .zIndex(6f)
-                        .padding(top = dataPanelTopPadding, start = 8.dp, end = 8.dp, bottom = dataPanelBottomPadding)
+                        .padding(top = 34.dp)
                     else -> Modifier
                         .align(Alignment.TopCenter)
                         .zIndex(6f)
@@ -6913,11 +6735,205 @@ fun TrackingScreen(
             }
         )
 
+        if (!analysisMode && persistentPrecisionVisible) {
+            val isTrackingPrecision =
+                trackMode && (manualTrackingMode || (autoTrackEnabled && pendingSeedScreenPoint != null))
+            val precisionColor = if (isTrackingPrecision) {
+                if (activeTrack == ActiveTrack.A) overlayColorFromArgb(trackAColorArgb)
+                else overlayColorFromArgb(trackBColorArgb)
+            } else {
+                when (auxiliaryPrecisionTarget) {
+                    is AuxiliaryPrecisionTarget.Calibration -> overlayColorFromArgb(calibrationColorArgb)
+                    is AuxiliaryPrecisionTarget.Light -> LabAccent
+                    is AuxiliaryPrecisionTarget.Photogate -> LabGold
+                    null -> LabAccent
+                }
+            }
+            PrecisionInstrumentPanel(
+                title = if (isTrackingPrecision) {
+                    if (manualTrackingMode) "MANUAL ${activeTrack.name}" else "AUTO ${activeTrack.name}"
+                } else {
+                    "PRECISION"
+                },
+                trackColor = precisionColor,
+                magnifierBitmap = magnifierBitmap,
+                targetPosition = if (isTrackingPrecision) precisionTargetPosition else auxiliaryPrecisionPoint,
+                targetLabel = if (isTrackingPrecision) precisionTargetLabel else auxiliaryPrecisionLabel,
+                stepPx = seedNudgeStepPx,
+                canConfirm = if (isTrackingPrecision) precisionTargetPosition != null else auxiliaryPrecisionPoint != null,
+                onStepChange = { seedNudgeStepPx = it },
+                onNudge = if (isTrackingPrecision) ::nudgePrecisionTarget else ::nudgeAuxiliaryPrecisionTarget,
+                onConfirm = if (isTrackingPrecision) ::confirmPrecisionTarget else ::confirmAuxiliaryPrecisionTarget,
+                modifier = Modifier
+                    .offset(
+                        x = (configuration.screenWidthDp * floatingWindows.precision.x).dp,
+                        y = (configuration.screenHeightDp * floatingWindows.precision.y).dp
+                    )
+                    .width((configuration.screenWidthDp * floatingWindows.precision.width).dp)
+                    .height((configuration.screenHeightDp * floatingWindows.precision.height).dp)
+                    .padding(top = 34.dp)
+                    .zIndex(9.5f)
+            )
+            FloatingOverlayChrome(
+                title = if (isTrackingPrecision) "PIXEL PRECISION" else "SELECTOR PRECISION",
+                isLive = false,
+                xFraction = floatingWindows.precision.x,
+                yFraction = floatingWindows.precision.y,
+                widthFraction = floatingWindows.precision.width,
+                heightFraction = floatingWindows.precision.height,
+                isLandscape = isLandscape,
+                onMove = { x, y ->
+                    floatingWindows.precision.x = x
+                    floatingWindows.precision.y = y
+                },
+                onResize = { width, height ->
+                    floatingWindows.precision.width = width
+                    floatingWindows.precision.height = height
+                },
+                onReset = {
+                    floatingWindows.precision.x = if (isLandscape) 0.57f else 0.04f
+                    floatingWindows.precision.y = if (isLandscape) 0.03f else 0.08f
+                    floatingWindows.precision.width = if (isLandscape) 0.42f else 0.92f
+                    floatingWindows.precision.height = if (isLandscape) 0.48f else 0.28f
+                },
+                onClose = {},
+                showClose = false,
+                layer = 10f,
+                minimumWidthFraction = if (isLandscape) 0.38f else 0.72f,
+                minimumHeightFraction = if (isLandscape) 0.44f else 0.22f
+            )
+        }
+
+        if (!videoFocusMode && trackMode && floatingWindows.showTable) {
+            FloatingKinematicsPanel(
+                displayedUnit = displayedUnit,
+                displayTablePoints = visibleTablePoints,
+                totalPointCount = selectedTableSourcePoints.size,
+                showTrackColumn = twoTrackMode && showTableTrackA && showTableTrackB,
+                trackAColor = overlayColorFromArgb(trackAColorArgb),
+                trackBColor = overlayColorFromArgb(trackBColorArgb),
+                isLivePlayback = isPlaying,
+                isLandscape = isLandscape,
+                modifier = Modifier
+                    .offset(
+                        x = (configuration.screenWidthDp * floatingWindows.table.x).dp,
+                        y = (configuration.screenHeightDp * floatingWindows.table.y).dp
+                    )
+                    .width((configuration.screenWidthDp * floatingWindows.table.width).dp)
+                    .height((configuration.screenHeightDp * floatingWindows.table.height).dp)
+                    .padding(top = 34.dp)
+                    .zIndex(6.5f)
+            )
+        }
+        if (!videoFocusMode && trackMode && floatingWindows.showGraph) {
+            FloatingOverlayChrome(
+                title = "LIVE GRAPH",
+                isLive = isPlaying,
+                xFraction = floatingWindows.graph.x,
+                yFraction = floatingWindows.graph.y,
+                widthFraction = floatingWindows.graph.width,
+                heightFraction = floatingWindows.graph.height,
+                isLandscape = isLandscape,
+                onMove = { dx, dy ->
+                    floatingWindows.graph.x = dx
+                    floatingWindows.graph.y = dy
+                },
+                onResize = { width, height ->
+                    floatingWindows.graph.width = width
+                    floatingWindows.graph.height = height
+                },
+                onReset = {
+                    floatingWindows.graph.x = if (isLandscape) 0.025f else 0.05f
+                    floatingWindows.graph.y = if (isLandscape) 0.12f else 0.16f
+                    floatingWindows.graph.width = if (isLandscape) 0.60f else 0.90f
+                    floatingWindows.graph.height = if (isLandscape) 0.70f else 0.60f
+                },
+                onClose = {
+                    floatingWindows.showGraph = false
+                    graphFullScreen = false
+                }
+            )
+        }
+        if (!videoFocusMode && trackMode && floatingWindows.showTable) {
+            FloatingOverlayChrome(
+                title = "LIVE TABLE",
+                isLive = isPlaying,
+                xFraction = floatingWindows.table.x,
+                yFraction = floatingWindows.table.y,
+                widthFraction = floatingWindows.table.width,
+                heightFraction = floatingWindows.table.height,
+                isLandscape = isLandscape,
+                onMove = { dx, dy ->
+                    floatingWindows.table.x = dx
+                    floatingWindows.table.y = dy
+                },
+                onResize = { width, height ->
+                    floatingWindows.table.width = width
+                    floatingWindows.table.height = height
+                },
+                onReset = {
+                    floatingWindows.table.x = if (isLandscape) 0.10f else 0.04f
+                    floatingWindows.table.y = if (isLandscape) 0.20f else 0.24f
+                    floatingWindows.table.width = if (isLandscape) 0.54f else 0.92f
+                    floatingWindows.table.height = if (isLandscape) 0.58f else 0.52f
+                },
+                onClose = { floatingWindows.showTable = false }
+            )
+        }
+
         if (useLandscapeSplit && !analysisMode) {
             Box(
                 modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxWidth(sidebarWidthFraction)
                     .fillMaxHeight()
-                    .fillMaxWidth(0.55f)
+                    .zIndex(8f)
+            ) {
+                Surface(
+                    color = PhysicsColorSurface.copy(alpha = 0.96f),
+                    contentColor = PhysicsColorAccent,
+                    shape = RoundedCornerShape(topEnd = 10.dp, bottomEnd = 10.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, PhysicsColorDivider),
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(top = 68.dp)
+                        .offset(x = (-24).dp)
+                        .width(24.dp)
+                        .height(72.dp)
+                        .pointerInput(configuration.screenWidthDp, sidebarWidthFraction) {
+                            detectDragGestures { change, dragAmount ->
+                                change.consume()
+                                val screenWidthPx = configuration.screenWidthDp
+                                    .toFloat()
+                                    .times(density)
+                                    .coerceAtLeast(1f)
+                                sidebarWidthFraction = (
+                                    sidebarWidthFraction - dragAmount.x / screenWidthPx
+                                ).coerceIn(0.32f, 0.56f)
+                            }
+                        }
+                        .clickable {
+                            sidebarWidthFraction =
+                                if (sidebarWidthFraction > 0.36f) 0.32f else 0.52f
+                        }
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            if (sidebarWidthFraction > 0.36f) "›" else "‹",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text("⋮", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(0.68f)
                     .wrapContentWidth(Alignment.End)
                     .width(1.dp)
                     .background(PhysicsColorDivider)
@@ -6925,7 +6941,7 @@ fun TrackingScreen(
             )
         }
 
-        if (graphFullScreen) {
+        if (graphFullScreen && analysisMode) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -7072,6 +7088,113 @@ private fun MainBottomNavRow(
         }
         BottomNavIconButton(symbol = "⋮", label = "More", selected = activeBottomTab == BottomMainTab.MORE, accent = PhysicsColorOnBackground, prominent = true) {
             onToggleMore()
+        }
+    }
+}
+
+@Composable
+private fun FloatingOverlayChrome(
+    title: String,
+    isLive: Boolean,
+    xFraction: Float,
+    yFraction: Float,
+    widthFraction: Float,
+    heightFraction: Float,
+    isLandscape: Boolean,
+    onMove: (Float, Float) -> Unit,
+    onResize: (Float, Float) -> Unit,
+    onReset: () -> Unit,
+    onClose: () -> Unit,
+    showClose: Boolean = true,
+    layer: Float = 8f,
+    minimumWidthFraction: Float? = null,
+    minimumHeightFraction: Float = 0.32f
+) {
+    val configuration = LocalConfiguration.current
+    val density = androidx.compose.ui.platform.LocalDensity.current.density
+    val screenWidthPx = configuration.screenWidthDp.toFloat().times(density).coerceAtLeast(1f)
+    val screenHeightPx = configuration.screenHeightDp.toFloat().times(density).coerceAtLeast(1f)
+    val overlayX = (configuration.screenWidthDp * xFraction).dp
+    val overlayY = (configuration.screenHeightDp * yFraction).dp
+    val overlayWidth = (configuration.screenWidthDp * widthFraction).dp
+    val overlayHeight = (configuration.screenHeightDp * heightFraction).dp
+    // A pointerInput coroutine outlives recompositions. Keep its gesture
+    // calculations pointed at the latest geometry, rather than at the
+    // position captured when the window was first shown.
+    val currentXFraction by rememberUpdatedState(xFraction)
+    val currentYFraction by rememberUpdatedState(yFraction)
+    val currentWidthFraction by rememberUpdatedState(widthFraction)
+    val currentHeightFraction by rememberUpdatedState(heightFraction)
+    Surface(
+        color = Color.Black.copy(alpha = 0.62f),
+        contentColor = Color.White,
+        shape = RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.30f)),
+        modifier = Modifier
+            .offset(x = overlayX, y = overlayY)
+            .width(overlayWidth)
+            .height(34.dp)
+            .zIndex(layer)
+    ) {
+        Row(modifier = Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .pointerInput(configuration.orientation) {
+                        detectDragGestures { change, dragAmount ->
+                            change.consume()
+                            onMove(
+                                (currentXFraction + dragAmount.x / screenWidthPx)
+                                    .coerceIn(0f, (1f - currentWidthFraction).coerceAtLeast(0f)),
+                                (currentYFraction + dragAmount.y / screenHeightPx)
+                                    .coerceIn(0f, (1f - currentHeightFraction).coerceAtLeast(0f))
+                            )
+                        }
+                    }
+                    .padding(horizontal = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("⠿", color = Color.White.copy(alpha = 0.72f), style = MaterialTheme.typography.labelMedium)
+                Text(title, color = Color.White, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
+                if (isLive) Text("● LIVE", color = LabSuccess, style = MaterialTheme.typography.labelSmall)
+            }
+            TextButton(onClick = onReset, modifier = Modifier.size(34.dp), contentPadding = PaddingValues(0.dp)) {
+                Text("↺", color = Color.White, style = MaterialTheme.typography.labelLarge)
+            }
+            if (showClose) {
+                TextButton(onClick = onClose, modifier = Modifier.size(34.dp), contentPadding = PaddingValues(0.dp)) {
+                    Text("×", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                }
+            }
+        }
+    }
+    Surface(
+        color = Color.Black.copy(alpha = 0.68f),
+        contentColor = Color.White,
+        shape = RoundedCornerShape(topStart = 10.dp, bottomEnd = 12.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.34f)),
+        modifier = Modifier
+            .offset(x = overlayX + overlayWidth - 34.dp, y = overlayY + overlayHeight - 34.dp)
+            .size(34.dp)
+            .zIndex(layer)
+            .pointerInput(configuration.orientation, isLandscape) {
+                detectDragGestures { change, dragAmount ->
+                    change.consume()
+                    val minimumWidth = minimumWidthFraction ?: if (isLandscape) 0.32f else 0.62f
+                    val maximumWidth = (0.98f - currentXFraction).coerceAtLeast(minimumWidth)
+                    val maximumHeight = (0.98f - currentYFraction).coerceAtLeast(minimumHeightFraction)
+                    onResize(
+                        (currentWidthFraction + dragAmount.x / screenWidthPx).coerceIn(minimumWidth, maximumWidth),
+                        (currentHeightFraction + dragAmount.y / screenHeightPx)
+                            .coerceIn(minimumHeightFraction, maximumHeight)
+                    )
+                }
+            }
+    ) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text("◢", color = Color.White.copy(alpha = 0.86f), style = MaterialTheme.typography.labelLarge)
         }
     }
 }
@@ -7230,7 +7353,7 @@ private fun WorkspaceOverlayPanels(
     analysisTrackingControls: @Composable () -> Unit = {}
 ) {
     if (!videoFocusMode && ((dataMode && showDataTable) || showLandscapeLiveGraph)) {
-        val resolvedDataPanelMode = if (showLandscapeLiveGraph && trackMode && dataPanelMode != DataPanelMode.ANALYSIS) {
+        val resolvedDataPanelMode = if (trackMode && showLandscapeLiveGraph) {
             DataPanelMode.GRAPH
         } else {
             dataPanelMode
@@ -7414,6 +7537,8 @@ private fun WorkspaceOverlayPanels(
 @Composable
 private fun TrackDataTray(
     showDataTable: Boolean,
+    showGraphOverlay: Boolean,
+    showTableOverlay: Boolean,
     dataPanelMode: DataPanelMode,
     twoTrackMode: Boolean,
     showGraphTrackA: Boolean,
@@ -7444,8 +7569,8 @@ private fun TrackDataTray(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            BottomDeckButton("GRAPH", selected = showDataTable && dataPanelMode == DataPanelMode.GRAPH, accent = LabAccent) { onGraphMode() }
-            BottomDeckButton("TABLE", selected = showDataTable && dataPanelMode == DataPanelMode.TABLE, accent = LabSuccess) { onTableMode() }
+            BottomDeckButton("GRAPH", selected = showGraphOverlay, accent = LabAccent) { onGraphMode() }
+            BottomDeckButton("TABLE", selected = showTableOverlay, accent = LabSuccess) { onTableMode() }
             BottomDeckButton("ANALYSIS", selected = showDataTable && dataPanelMode == DataPanelMode.ANALYSIS, accent = LabGold) { onAnalysisMode() }
             if (selectedGraphPointId != null) {
                 BottomDeckButton("REMOVE", enabled = true, accent = LabDanger) { onRemoveSelectedGraphPoint() }
@@ -7662,7 +7787,12 @@ private fun TrackBottomTrayContent(
     disableExistingPointSelection: Boolean,
     seedLockMode: SeedLockMode,
     trackingStepOption: TrackingStepOption,
+    canStepBackward: Boolean,
+    canStepForward: Boolean,
+    onStepFrames: (Int) -> Unit,
     showDataTable: Boolean,
+    showGraphOverlay: Boolean,
+    showTableOverlay: Boolean,
     dataPanelMode: DataPanelMode,
     showGraphTrackA: Boolean,
     showGraphTrackB: Boolean,
@@ -7743,6 +7873,22 @@ private fun TrackBottomTrayContent(
             }
             BottomDeckButton("AUTO", selected = autoTrackEnabled, accent = LabGold, prominent = true) { onAutoMode() }
         }
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("FRAME", color = PhysicsColorOnSurface.copy(alpha = 0.72f), style = MaterialTheme.typography.labelSmall)
+            listOf(-10, -5, -1, 1, 5, 10).forEach { frames ->
+                BottomDeckButton(
+                    label = if (frames > 0) "+" + frames else frames.toString(),
+                    enabled = if (frames < 0) canStepBackward else canStepForward,
+                    accent = if (frames < 0) LabGold else LabAccent
+                ) {
+                    onStepFrames(frames)
+                }
+            }
+        }
         Text(
             "TOOLS",
             color = PhysicsColorOnSurface.copy(alpha = 0.72f),
@@ -7760,7 +7906,11 @@ private fun TrackBottomTrayContent(
                 BottomDeckButton("POINTS", selected = trackTrayPanel == TrackTrayPanel.TARGET, accent = LabAccent) { onToggleTarget() }
             }
             if (autoTrackEnabled && hasPreparedAutoTrack) {
-                BottomDeckButton("RUN", selected = trackTrayPanel == TrackTrayPanel.AUTO_RUN, accent = LabSuccess) { onToggleRun() }
+                BottomDeckButton(
+                    if (autoTrackRunning) "● RUNNING" else "RUN",
+                    selected = autoTrackRunning || trackTrayPanel == TrackTrayPanel.AUTO_RUN,
+                    accent = if (autoTrackRunning) LabDanger else LabSuccess
+                ) { onToggleRun() }
             }
             BottomDeckButton("STEP", selected = trackTrayPanel == TrackTrayPanel.STEP, accent = LabGold) { onToggleStep() }
             BottomDeckButton("RESULTS", selected = trackTrayPanel == TrackTrayPanel.DATA, accent = LabAccent) { onToggleData() }
@@ -7782,34 +7932,6 @@ private fun TrackBottomTrayContent(
                 BottomDeckButton("OBJECT A", selected = activeTrack == ActiveTrack.A, accent = trackAColor) { onSelectTrackA() }
                 BottomDeckButton("OBJECT B", selected = activeTrack == ActiveTrack.B, accent = trackBColor) { onSelectTrackB() }
             }
-        }
-        if (manualTrackingMode) {
-            PrecisionInstrumentPanel(
-                title = "MANUAL ${activeTrack.name}",
-                trackColor = if (activeTrack == ActiveTrack.A) trackAColor else trackBColor,
-                magnifierBitmap = magnifierBitmap,
-                targetPosition = precisionTargetPosition,
-                targetLabel = precisionTargetLabel,
-                stepPx = precisionStepPx,
-                canConfirm = precisionTargetPosition != null,
-                onStepChange = onPrecisionStepChange,
-                onNudge = onNudgePrecision,
-                onConfirm = onConfirmPrecisionTarget
-            )
-        }
-        if (autoTrackEnabled && pendingSeedScreenPoint != null) {
-            PrecisionInstrumentPanel(
-                title = "AUTO ${activeTrack.name}",
-                trackColor = if (activeTrack == ActiveTrack.A) trackAColor else trackBColor,
-                magnifierBitmap = magnifierBitmap,
-                targetPosition = precisionTargetPosition,
-                targetLabel = precisionTargetLabel,
-                stepPx = precisionStepPx,
-                canConfirm = true,
-                onStepChange = onPrecisionStepChange,
-                onNudge = onNudgePrecision,
-                onConfirm = onConfirmPrecisionTarget
-            )
         }
         when (trackTrayPanel) {
             TrackTrayPanel.SETUP -> {
@@ -8008,6 +8130,8 @@ private fun TrackBottomTrayContent(
             TrackTrayPanel.DATA -> {
                 TrackDataTray(
                     showDataTable = showDataTable,
+                    showGraphOverlay = showGraphOverlay,
+                    showTableOverlay = showTableOverlay,
                     dataPanelMode = dataPanelMode,
                     twoTrackMode = twoTrackMode,
                     showGraphTrackA = showGraphTrackA,
@@ -8239,6 +8363,7 @@ private fun MoreBottomTrayContent(
                     Slider(
                         value = videoScaleSlider,
                         onValueChange = { onVideoScaleChange(it) },
+                        enabled = videoZoomEnabled,
                         valueRange = 1f..6f,
                         colors = SliderDefaults.colors(thumbColor = LabGold, activeTrackColor = LabGold, inactiveTrackColor = PhysicsColorDivider)
                     )
@@ -8513,13 +8638,14 @@ private fun PrecisionInstrumentPanel(
     canConfirm: Boolean,
     onStepChange: (Float) -> Unit,
     onNudge: (Float, Float) -> Unit,
-    onConfirm: () -> Unit
+    onConfirm: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     Surface(
         color = PhysicsColorSurface.copy(alpha = 0.98f),
         shape = RoundedCornerShape(14.dp),
         border = androidx.compose.foundation.BorderStroke(1.dp, trackColor.copy(alpha = 0.5f)),
-        modifier = Modifier.fillMaxWidth()
+        modifier = modifier.fillMaxWidth()
     ) {
         Row(
             modifier = Modifier
@@ -8760,12 +8886,10 @@ private fun FloatingKinematicsPanel(
     }
 
     Surface(
-        color = Color.Black.copy(alpha = 0.86f),
+        color = Color.Black.copy(alpha = 0.72f),
         tonalElevation = 6.dp,
         modifier = modifier
-            .fillMaxWidth()
-            .widthIn(max = 760.dp)
-            .heightIn(min = if (isLandscape) 220.dp else 244.dp, max = if (isLandscape) 320.dp else 360.dp)
+            .fillMaxSize()
     ) {
         Column(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 10.dp)) {
             Row(
@@ -9782,8 +9906,7 @@ private fun FloatingGraphPanel(
             },
             fullGraphVisible = graphFullScreen,
             onFullGraphVisibleChange = onGraphFullScreenChange,
-            modifier = modifier,
-            controlContent = trackingControls
+            modifier = modifier
         ) {
             Box(modifier = Modifier.fillMaxSize()) {
                 if (primaryGraphPoints.size < 2) {
@@ -9898,9 +10021,9 @@ private fun FloatingGraphPanel(
         return
     }
     Surface(
-        color = Color(0xFF07110C),
+        color = Color(0xFF07110C).copy(alpha = 0.72f),
         tonalElevation = 0.dp,
-        shape = RoundedCornerShape(if (isLandscape || graphFullScreen) 0.dp else 12.dp),
+        shape = RoundedCornerShape(if (graphFullScreen) 0.dp else 14.dp),
         border = androidx.compose.foundation.BorderStroke(1.dp, PhysicsColorDivider),
         modifier = modifier.then(
             when {
