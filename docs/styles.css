@@ -7,6 +7,7 @@ header, main, footer { width:min(1120px, calc(100% - 40px)); margin:auto; }
 header { padding:28px 0 54px; }
 nav { display:flex; justify-content:space-between; gap:18px; align-items:center; flex-wrap:wrap; }
 .brand { color:var(--ink); font-size:1.1rem; font-weight:800; text-decoration:none; letter-spacing:.02em; }
+.wordmark { display:block; width:100%; max-width:520px; margin:auto; border-radius:20px; }
 nav ul { margin:0; padding:0; display:flex; gap:17px; list-style:none; }
 nav a { text-decoration:none; font-size:.9rem; }
 .hero { display:grid; grid-template-columns:1.05fr .95fr; gap:42px; align-items:center; padding:48px 0 34px; }
