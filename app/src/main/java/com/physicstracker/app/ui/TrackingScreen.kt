@@ -1442,9 +1442,15 @@ private fun autoSeedHandleCenter(
 ): Offset {
     val maxX = canvasSize.width.toFloat().coerceAtLeast(1f)
     val maxY = canvasSize.height.toFloat().coerceAtLeast(1f)
+    val below = point.y + handleLiftPx
+    val handleY = if (below <= maxY - 12f) {
+        below
+    } else {
+        (point.y - handleLiftPx).coerceAtLeast(12f)
+    }
     return Offset(
         point.x.coerceIn(0f, maxX),
-        (point.y + handleLiftPx).coerceIn(0f, maxY)
+        handleY.coerceIn(0f, maxY)
     )
 }
 
@@ -2528,7 +2534,11 @@ fun TrackingScreen(
     var pointHistoryMode by rememberSaveable { mutableStateOf(PointHistoryMode.FADE) }
     var showAnalysisGuides by rememberSaveable { mutableStateOf(false) }
     var showBottomSettings by rememberSaveable { mutableStateOf(false) }
-    var activeBottomTab by rememberSaveable { mutableStateOf<BottomMainTab?>(BottomMainTab.TRACK) }
+    var activeBottomTab by rememberSaveable {
+        mutableStateOf<BottomMainTab?>(
+            if (isLandscape) BottomMainTab.PLAY else BottomMainTab.TRACK
+        )
+    }
     var trackTrayPanel by rememberSaveable { mutableStateOf<TrackTrayPanel?>(null) }
     var moreTrayPanel by rememberSaveable { mutableStateOf<MoreTrayPanel?>(null) }
     var activeOverlayRole by rememberSaveable { mutableStateOf(OverlayColorRole.TRACK_A) }
@@ -2586,6 +2596,9 @@ fun TrackingScreen(
     var draggedPointDraft by remember { mutableStateOf<Offset?>(null) }
     var draggedPointTouchDelta by remember { mutableStateOf<Offset?>(null) }
     var manualPendingPoint by remember { mutableStateOf<Offset?>(null) }
+    // Source-video pixel is the single source of truth for the persistent manual locator.
+    // manualPendingPoint is only its current projection into the on-screen video viewport.
+    var manualLocatorSourcePixel by remember { mutableStateOf<SelectedPixel?>(null) }
     var manualPrecisionFocusPoint by remember { mutableStateOf<Offset?>(null) }
     var manualPendingTouchDelta by remember { mutableStateOf<Offset?>(null) }
     var manualDragUsesHandle by rememberSaveable { mutableStateOf(false) }
@@ -2826,6 +2839,7 @@ fun TrackingScreen(
         draggedPointDraft = null
         draggedPointTouchDelta = null
         manualPendingPoint = null
+        manualLocatorSourcePixel = null
         manualPrecisionFocusPoint = null
         manualPendingTouchDelta = null
         manualDragUsesHandle = false
@@ -2898,6 +2912,7 @@ fun TrackingScreen(
         activeTrack = ActiveTrack.A
         selectedPointId = -1L
         manualPendingPoint = null
+        manualLocatorSourcePixel = null
         draggedPointDraft = null
         if (multiTrackEnabled) {
             autoTrackSeedB = null
@@ -3013,10 +3028,28 @@ fun TrackingScreen(
                         )
                     } else draft
                     viewModel.updateSourcePoint(point, source.x.toDouble(), source.y.toDouble())
-                    manualPrecisionFocusPoint = draft
+                    val selected = source.toSelectedPixel(
+                        sourceVideoSize.width.coerceAtLeast(1),
+                        sourceVideoSize.height.coerceAtLeast(1)
+                    )
+                    manualLocatorSourcePixel = selected
+                    manualPendingPoint = draft
+                    manualPrecisionFocusPoint = manualPendingPoint
                 } else if (point != null) {
-                    manualPrecisionFocusPoint = overlayTrackPoints.firstOrNull { it.id == point.id }
+                    val selected = SelectedPixel(
+                        x = point.pixelX.roundToInt().coerceIn(
+                            0,
+                            (sourceVideoSize.width - 1).coerceAtLeast(0)
+                        ),
+                        y = point.pixelY.roundToInt().coerceIn(
+                            0,
+                            (sourceVideoSize.height - 1).coerceAtLeast(0)
+                        )
+                    )
+                    manualLocatorSourcePixel = selected
+                    manualPendingPoint = overlayTrackPoints.firstOrNull { it.id == point.id }
                         ?.let { Offset(it.pixelX.toFloat(), it.pixelY.toFloat()) }
+                    manualPrecisionFocusPoint = manualPendingPoint
                 }
                 selectedPointId = -1L
                 draggedPointDraft = null
@@ -3024,7 +3057,6 @@ fun TrackingScreen(
             }
             manualPendingPoint != null -> {
                 val point = manualPendingPoint ?: return
-                manualPrecisionFocusPoint = point
                 val source = if (sourceVideoSize.width > 0 && sourceVideoSize.height > 0 && canvasSize != IntSize.Zero) {
                     val contentBounds = playerViewRef?.let { playerView ->
                         playerVideoContentBounds(
@@ -3048,6 +3080,13 @@ fun TrackingScreen(
                         contentBounds
                     )
                 } else point
+                val selected = source.toSelectedPixel(
+                    sourceVideoSize.width.coerceAtLeast(1),
+                    sourceVideoSize.height.coerceAtLeast(1)
+                )
+                manualLocatorSourcePixel = selected
+                manualPendingPoint = point
+                manualPrecisionFocusPoint = manualPendingPoint
                 scope.launch {
                     viewModel.addSourceObservationTracked(
                         VideoPlayerViewModel.ObservationWrite(
@@ -3063,7 +3102,6 @@ fun TrackingScreen(
                         )
                     )
                 }
-                manualPendingPoint = null
                 manualPendingTouchDelta = null
             }
             else -> return
@@ -3409,7 +3447,6 @@ fun TrackingScreen(
         selectedPointId = -1L
         draggedPointDraft = null
         draggedPointTouchDelta = null
-        manualPendingPoint = null
         manualPendingTouchDelta = null
     }
 
@@ -4131,6 +4168,43 @@ fun TrackingScreen(
             sourceVideoSize.width.coerceAtLeast(1),
             sourceVideoSize.height.coerceAtLeast(1)
         )
+    fun setManualLocatorScreen(point: Offset?) {
+        if (point == null) {
+            manualPendingPoint = null
+            return
+        }
+        val selected = selectedPixelForScreen(point)
+        val projected = screenPointForSource(selected.offset)
+        manualLocatorSourcePixel = selected
+        manualPendingPoint = projected
+        manualPrecisionFocusPoint = projected
+    }
+    LaunchedEffect(
+        manualTrackingMode,
+        selectedPointId,
+        activeTrack,
+        canvasSize,
+        sourceVideoSize,
+        sourceVideoRotationDegrees,
+        playerViewRef
+    ) {
+        if (!manualTrackingMode || canvasSize == IntSize.Zero || selectedPointId != -1L) {
+            return@LaunchedEffect
+        }
+        val selected = manualLocatorSourcePixel ?: run {
+            val rect = currentVideoDisplayRect()
+            selectedPixelForScreen(
+                Offset(
+                    x = (rect.left + rect.right) / 2f,
+                    y = (rect.top + rect.bottom) / 2f
+                )
+            )
+        }
+        manualLocatorSourcePixel = selected
+        val projected = screenPointForSource(selected.offset)
+        manualPendingPoint = projected
+        manualPrecisionFocusPoint = projected
+    }
     fun ensureTrackingRoi(pixel: SelectedPixel): TrackingRoi =
         trackingRoi?.copy(center = pixel.offset) ?: TrackingRoi(center = pixel.offset)
     fun updateTrackingRoiCenter(screenCenter: Offset) {
@@ -4526,8 +4600,7 @@ fun TrackingScreen(
                 autoTrackStatus = null
             }
             manualPendingPoint != null && selectedPointId == -1L -> {
-                manualPendingPoint = moveBySourcePixels(manualPendingPoint ?: return)
-                manualPrecisionFocusPoint = manualPendingPoint
+                setManualLocatorScreen(moveBySourcePixels(manualPendingPoint ?: return))
             }
             selectedPointId != -1L -> {
                 val point = overlayTrackPoints.firstOrNull { it.id == selectedPointId } ?: return
@@ -5337,6 +5410,12 @@ fun TrackingScreen(
         lockAndFitVideo()
         viewModel.initializeProject(videoUri, projectName)
     }
+    LaunchedEffect(videoUri, projectName, isLandscape) {
+        if (isLandscape) {
+            activeBottomTab = BottomMainTab.PLAY
+            videoFocusMode = false
+        }
+    }
 
     // Keyboard shortcut state
     val keyboardFocusRequester = remember { FocusRequester() }
@@ -5541,6 +5620,7 @@ fun TrackingScreen(
                                 }
                                 selectedPointId = -1L
                                 manualPendingPoint = null
+                                manualLocatorSourcePixel = null
                                 return@detectTapGestures
                             }
                             val hit = if (disableExistingPointSelection) null else (
@@ -5558,14 +5638,14 @@ fun TrackingScreen(
                             )
                             if (hit != null) {
                                 selectedPointId = hit.id
-                                manualPendingPoint = null
+                                setManualLocatorScreen(null)
                                 manualPendingTouchDelta = null
                                 manualDragUsesHandle = false
                             } else {
                                 selectedPointId = -1L
                                 draggedPointDraft = null
                                 draggedPointTouchDelta = null
-                                manualPendingPoint = snappedScreenPoint(overlayOffset)
+                                setManualLocatorScreen(overlayOffset)
                                 manualPendingTouchDelta = Offset.Zero
                                 manualDragUsesHandle = false
                             }
@@ -5607,10 +5687,11 @@ fun TrackingScreen(
                             )
                             if (hit != null) {
                                 selectedPointId = hit.id
+                                setManualLocatorScreen(null)
                                 confirmManualSelection()
                             } else {
                                 selectedPointId = -1L
-                                manualPendingPoint = snappedScreenPoint(overlayOffset)
+                                setManualLocatorScreen(overlayOffset)
                                 manualPendingTouchDelta = Offset.Zero
                                 confirmManualSelection()
                             }
@@ -5691,7 +5772,11 @@ fun TrackingScreen(
                                 val handleHit = distanceBetween(overlayOffset, handleCenter) <= 36f * density
                                 val pointHit = distanceBetween(overlayOffset, resolvedPoint) <= 30f * density
                                 autoSeedDragUsesHandle = handleHit && !pointHit
-                                pendingSeedTouchDelta = resolvedPoint - overlayOffset
+                                pendingSeedTouchDelta = if (autoSeedDragUsesHandle) {
+                                    resolvedPoint - handleCenter
+                                } else {
+                                    resolvedPoint - overlayOffset
+                                }
                                 return@detectDragGestures
                             }
                             if (!autoTrackEnabled && !calibrationMode && selectedPointId == -1L) {
@@ -5703,12 +5788,12 @@ fun TrackingScreen(
                                         draggedPointDraft = null
                                         draggedPointTouchDelta = null
                                         manualDragUsesHandle = handleHit && !pointHit
-                                        manualPendingTouchDelta = if (manualDragUsesHandle) Offset(0f, -manualHandleLiftPx) else Offset.Zero
+                                        manualPendingTouchDelta = if (manualDragUsesHandle) pending - handleCenter else Offset.Zero
                                         return@detectDragGestures
                                     }
                                 }
                                 if (disableExistingPointSelection) {
-                                    manualPendingPoint = snappedScreenPoint(overlayOffset)
+                                    setManualLocatorScreen(overlayOffset)
                                     manualPendingTouchDelta = Offset.Zero
                                     manualDragUsesHandle = false
                                     return@detectDragGestures
@@ -5732,10 +5817,10 @@ fun TrackingScreen(
                                     draggedPointDraft = anchor
                                     manualDragUsesHandle = distanceBetween(overlayOffset, handleCenter) <= 30f * density &&
                                         distanceBetween(overlayOffset, anchor) > 24f * density
-                                    draggedPointTouchDelta = if (manualDragUsesHandle) Offset(0f, -manualHandleLiftPx) else Offset.Zero
+                                    draggedPointTouchDelta = if (manualDragUsesHandle) anchor - handleCenter else Offset.Zero
                                     return@detectDragGestures
                                 }
-                                manualPendingPoint = snappedScreenPoint(overlayOffset)
+                                setManualLocatorScreen(overlayOffset)
                                 manualPendingTouchDelta = Offset.Zero
                                 manualDragUsesHandle = false
                                 return@detectDragGestures
@@ -5762,7 +5847,7 @@ fun TrackingScreen(
                                 val handleCenter = manualHandleCenter(anchor, canvasSize, manualHandleLiftPx)
                                 manualDragUsesHandle = distanceBetween(overlayOffset, handleCenter) <= 30f * density &&
                                     distanceBetween(overlayOffset, anchor) > 24f * density
-                                if (manualDragUsesHandle) Offset(0f, -manualHandleLiftPx) else Offset.Zero
+                                if (manualDragUsesHandle) anchor - handleCenter else Offset.Zero
                             }
 
                             val currentCalibration = displayedCalibration
@@ -6001,7 +6086,7 @@ fun TrackingScreen(
                             val maxX = canvasSize.width.toFloat().coerceAtLeast(1f)
                             val maxY = canvasSize.height.toFloat().coerceAtLeast(1f)
                             val dragDelta = manualPendingTouchDelta ?: Offset.Zero
-                            manualPendingPoint = snappedScreenPoint(Offset(
+                            setManualLocatorScreen(Offset(
                                 (overlayPosition.x + dragDelta.x).coerceIn(0f, maxX),
                                 (overlayPosition.y + dragDelta.y).coerceIn(0f, maxY)
                             ))
@@ -6148,6 +6233,28 @@ fun TrackingScreen(
                 drawLine(selectorColor, Offset(pending.x + centerGap, pending.y), Offset(pending.x + arm, pending.y), stroke)
                 drawLine(selectorColor, Offset(pending.x, pending.y - arm), Offset(pending.x, pending.y - centerGap), stroke)
                 drawLine(selectorColor, Offset(pending.x, pending.y + centerGap), Offset(pending.x, pending.y + arm), stroke)
+                val handle = manualHandleCenter(pending, canvasSize, manualHandleLiftPx)
+                if (distanceBetween(handle, pending) > 18.dp.toPx()) {
+                    val connectorStart = Offset(
+                        pending.x,
+                        pending.y + if (handle.y >= pending.y) arm else -arm
+                    )
+                    drawLine(
+                        Color.Black.copy(alpha = 0.78f),
+                        connectorStart,
+                        handle,
+                        4.dp.toPx()
+                    )
+                    drawLine(
+                        selectorColor.copy(alpha = 0.88f),
+                        connectorStart,
+                        handle,
+                        1.5.dp.toPx()
+                    )
+                    drawCircle(Color.Black.copy(alpha = 0.82f), 10.dp.toPx(), handle)
+                    drawCircle(selectorColor, 8.dp.toPx(), handle, style = Stroke(width = 2.dp.toPx()))
+                    drawCircle(selectorColor.copy(alpha = 0.32f), 5.dp.toPx(), handle)
+                }
             }
             if (trackMode && autoTrackEnabled) {
                 autoSelectorScreenPoint?.let { pending ->
@@ -6167,6 +6274,28 @@ fun TrackingScreen(
                     drawLine(color, Offset(pending.x + gap, pending.y), Offset(pending.x + arm, pending.y), stroke)
                     drawLine(color, Offset(pending.x, pending.y - arm), Offset(pending.x, pending.y - gap), stroke)
                     drawLine(color, Offset(pending.x, pending.y + gap), Offset(pending.x, pending.y + arm), stroke)
+                    val handle = autoSeedHandleCenter(pending, canvasSize, autoSeedHandleLiftPx)
+                    if (distanceBetween(handle, pending) > 18.dp.toPx()) {
+                        val connectorStart = Offset(
+                            pending.x,
+                            pending.y + if (handle.y >= pending.y) arm else -arm
+                        )
+                        drawLine(
+                            Color.Black.copy(alpha = 0.78f),
+                            connectorStart,
+                            handle,
+                            4.dp.toPx()
+                        )
+                        drawLine(
+                            color.copy(alpha = 0.88f),
+                            connectorStart,
+                            handle,
+                            1.5.dp.toPx()
+                        )
+                        drawCircle(Color.Black.copy(alpha = 0.82f), 10.dp.toPx(), handle)
+                        drawCircle(color, 8.dp.toPx(), handle, style = Stroke(width = 2.dp.toPx()))
+                        drawCircle(color.copy(alpha = 0.32f), 5.dp.toPx(), handle)
+                    }
                 }
                 trackingRoi?.let { roi ->
                     if (autoTrackSelectionMode && !roi.locked) {
@@ -6739,6 +6868,7 @@ fun TrackingScreen(
                                         autoTrackRunning = false
                                         autoTrackSelectionMode = false
                                         manualPendingPoint = null
+                                        manualLocatorSourcePixel = null
                                         manualPendingTouchDelta = null
                                         pendingSeedTouchDelta = null
                                         liveAutoTrackPreview.clear()
@@ -6755,6 +6885,7 @@ fun TrackingScreen(
                                         autoTrackRunning = false
                                         autoTrackSelectionMode = false
                                         manualPendingPoint = null
+                                        manualLocatorSourcePixel = null
                                         manualPendingTouchDelta = null
                                         pendingSeedTouchDelta = null
                                         liveAutoTrackPreview.clear()
@@ -6770,7 +6901,6 @@ fun TrackingScreen(
                                         trackTrayPanel = if (opening) TrackTrayPanel.TARGET else null
                                         if (opening && !autoTrackEnabled) {
                                             setCurrentDisableExistingPointSelection(false)
-                                            manualPendingPoint = null
                                             manualPendingTouchDelta = null
                                             draggedPointDraft = null
                                             draggedPointTouchDelta = null
