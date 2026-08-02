@@ -47,14 +47,17 @@ import dagger.hilt.android.AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestedOrientation =
-            if (getSharedPreferences("physics_tracker_settings", MODE_PRIVATE)
-                    .getBoolean("force_landscape", true)
-            ) {
+        val orientationPreferences = getSharedPreferences("physics_tracker_settings", MODE_PRIVATE)
+        requestedOrientation = when (orientationPreferences.getString("screen_orientation_mode", null)) {
+            "PORTRAIT" -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            "SYSTEM" -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            "LANDSCAPE" -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            else -> if (orientationPreferences.getBoolean("force_landscape", true)) {
                 ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
             } else {
                 ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             }
+        }
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsControllerCompat(window, window.decorView).apply {
             hide(WindowInsetsCompat.Type.systemBars())

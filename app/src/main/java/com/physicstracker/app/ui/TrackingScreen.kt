@@ -121,6 +121,7 @@ import com.physicstracker.app.ui.analysis.AnalysisWorkspaceState
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -215,6 +216,7 @@ private enum class MajorMode { TRACK, CAL, EDIT, DATA, LIGHT }
 private enum class TopPanelTab { OPTIONS, TRACKERS, SETTINGS }
 private enum class TrackerPanelSection { MODES, MODELS }
 private enum class DataPanelMode { TABLE, GRAPH, ANALYSIS }
+private enum class ScreenOrientationMode { LANDSCAPE, PORTRAIT, SYSTEM }
 
 private class FloatingWindowGeometry(
     initialX: Float,
@@ -298,7 +300,43 @@ private fun minimumObservationConfidence(quality: TrackingQuality): Double = whe
 }
 private enum class BottomMainTab { TRACK, CAL, PLAY, DATA, LIGHT, MORE }
 private enum class TrackTrayPanel { TARGET, SETUP, ADVANCED, AUTO_RUN, STEP, DATA }
-private enum class MoreTrayPanel { EDIT, MAG, VIEW, COLORS, EXPORT }
+private enum class MoreTrayPanel { EDIT, MAG, VIEW, COLORS, EXPORT, SCREEN }
+
+/**
+ * Packages callbacks that are shared across the large workspace renderer.
+ * Keeping them behind one reference prevents Compose from generating a lambda
+ * constructor whose argument list exceeds the DEX 255-register limit.
+ */
+private data class TrackingWorkspaceBindings(
+    val focusRequester: FocusRequester,
+    val coroutineScope: CoroutineScope,
+    val isLandscape: Boolean,
+    val analysisMode: Boolean,
+    val trackMode: Boolean,
+    val manualTrackingMode: Boolean,
+    val calibrationMode: Boolean,
+    val dataMode: Boolean,
+    val lightMode: Boolean,
+    val twoTrackMode: Boolean,
+    val hasPreparedAutoTrack: Boolean,
+    val useLandscapeSplit: Boolean,
+    val showLandscapeLiveGraph: Boolean,
+    val runExportAction: (((ExportArtifacts) -> String) -> Unit),
+    val onDataGraphMode: () -> Unit,
+    val onDataTableMode: () -> Unit,
+    val onDataAnalysisMode: () -> Unit,
+    val onDataRemoveSelectedPoint: () -> Unit,
+    val onDataGraphViewA: () -> Unit,
+    val onDataGraphViewB: () -> Unit,
+    val onDataGraphViewBoth: () -> Unit,
+    val onDataTableViewA: () -> Unit,
+    val onDataTableViewB: () -> Unit,
+    val onDataTableViewBoth: () -> Unit,
+    val onDataExportCsv: () -> Unit,
+    val onDataExportXlsx: () -> Unit,
+    val onDataExportPdf: () -> Unit
+)
+
 private enum class TrackingStepOption(val label: String, val frameStep: Int, val previewDelayMs: Long) {
     FRAME_1("1 frame", 1, 22L),
     FRAME_2("2 frames", 2, 18L),
@@ -329,7 +367,57 @@ private data class TrackingRoi(
     val locked: Boolean = false
 )
 
+/** The authoritative source-frame pixel while a target is being selected. */
+internal data class SelectedPixel(val x: Int, val y: Int) {
+    val offset: Offset get() = Offset(x.toFloat(), y.toFloat())
+}
+
+internal fun Offset.toSelectedPixel(sourceWidth: Int, sourceHeight: Int): SelectedPixel {
+    val snapped = snapToSourcePixel(this, sourceWidth, sourceHeight)
+    return SelectedPixel(snapped.x.toInt(), snapped.y.toInt())
+}
+
 private enum class TrackingRoiHandle { BODY, LEFT, RIGHT, TOP, BOTTOM, TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT }
+
+private fun sourceRoiHandleForDisplay(
+    handle: TrackingRoiHandle,
+    rotationDegrees: Int
+): TrackingRoiHandle = when (normalizeVideoRotation(rotationDegrees)) {
+    90 -> when (handle) {
+        TrackingRoiHandle.BODY -> TrackingRoiHandle.BODY
+        TrackingRoiHandle.LEFT -> TrackingRoiHandle.BOTTOM
+        TrackingRoiHandle.RIGHT -> TrackingRoiHandle.TOP
+        TrackingRoiHandle.TOP -> TrackingRoiHandle.LEFT
+        TrackingRoiHandle.BOTTOM -> TrackingRoiHandle.RIGHT
+        TrackingRoiHandle.TOP_LEFT -> TrackingRoiHandle.BOTTOM_LEFT
+        TrackingRoiHandle.TOP_RIGHT -> TrackingRoiHandle.TOP_LEFT
+        TrackingRoiHandle.BOTTOM_LEFT -> TrackingRoiHandle.BOTTOM_RIGHT
+        TrackingRoiHandle.BOTTOM_RIGHT -> TrackingRoiHandle.TOP_RIGHT
+    }
+    180 -> when (handle) {
+        TrackingRoiHandle.BODY -> TrackingRoiHandle.BODY
+        TrackingRoiHandle.LEFT -> TrackingRoiHandle.RIGHT
+        TrackingRoiHandle.RIGHT -> TrackingRoiHandle.LEFT
+        TrackingRoiHandle.TOP -> TrackingRoiHandle.BOTTOM
+        TrackingRoiHandle.BOTTOM -> TrackingRoiHandle.TOP
+        TrackingRoiHandle.TOP_LEFT -> TrackingRoiHandle.BOTTOM_RIGHT
+        TrackingRoiHandle.TOP_RIGHT -> TrackingRoiHandle.BOTTOM_LEFT
+        TrackingRoiHandle.BOTTOM_LEFT -> TrackingRoiHandle.TOP_RIGHT
+        TrackingRoiHandle.BOTTOM_RIGHT -> TrackingRoiHandle.TOP_LEFT
+    }
+    270 -> when (handle) {
+        TrackingRoiHandle.BODY -> TrackingRoiHandle.BODY
+        TrackingRoiHandle.LEFT -> TrackingRoiHandle.TOP
+        TrackingRoiHandle.RIGHT -> TrackingRoiHandle.BOTTOM
+        TrackingRoiHandle.TOP -> TrackingRoiHandle.RIGHT
+        TrackingRoiHandle.BOTTOM -> TrackingRoiHandle.LEFT
+        TrackingRoiHandle.TOP_LEFT -> TrackingRoiHandle.TOP_RIGHT
+        TrackingRoiHandle.TOP_RIGHT -> TrackingRoiHandle.BOTTOM_RIGHT
+        TrackingRoiHandle.BOTTOM_LEFT -> TrackingRoiHandle.TOP_LEFT
+        TrackingRoiHandle.BOTTOM_RIGHT -> TrackingRoiHandle.BOTTOM_LEFT
+    }
+    else -> handle
+}
 
 private data class AutoTrackSeed(
     val template: Bitmap,
@@ -350,6 +438,8 @@ private data class AutoTrackSeed(
     val objectSaturation: Float = 0f,
     val sourceWidth: Int,
     val sourceHeight: Int,
+    /** Canonical source-video center used by every main-image marker projection. */
+    val sourceCenter: Offset? = null,
     // Kalman Filter state
     val kfX: Float = center.x,
     val kfY: Float = center.y,
@@ -731,13 +821,13 @@ private val overlayColorPresets = listOf(
 private fun overlayColorFromArgb(argb: Int): Color = Color(argb)
 
 private fun overlayColorLabel(color: Color): String = when (color.toArgb()) {
-    PhysicsColorTrackA.toArgb() -> "Track A"
-    PhysicsColorAccent.toArgb() -> "Accent"
-    PhysicsColorTrackB.toArgb() -> "Track B"
-    PhysicsColorPrimaryDim.toArgb() -> "Primary Dim"
-    PhysicsColorOnBackground.toArgb() -> "Text"
-    PhysicsColorOnSurface.toArgb() -> "Muted"
-    else -> "Error"
+    PhysicsColorTrackA.toArgb() -> "MINT"
+    PhysicsColorAccent.toArgb() -> "GOLD"
+    PhysicsColorTrackB.toArgb() -> "AMBER"
+    PhysicsColorPrimaryDim.toArgb() -> "TEAL"
+    PhysicsColorOnBackground.toArgb() -> "WHITE"
+    PhysicsColorOnSurface.toArgb() -> "GREY"
+    else -> "RED"
 }
 
 private fun roleColor(role: OverlayColorRole, trackAArgb: Int, trackBArgb: Int, selectorArgb: Int, vectorArgb: Int, calibrationArgb: Int): Color =
@@ -894,39 +984,308 @@ private inline fun <T> withMediaMetadataRetriever(block: (MediaMetadataRetriever
     }
 }
 
-private fun videoDisplayRect(videoWidth: Int, videoHeight: Int, canvasSize: IntSize): Rect {
+internal fun normalizeVideoRotation(rotationDegrees: Int): Int {
+    val normalized = ((rotationDegrees % 360) + 360) % 360
+    return when (normalized) {
+        in 45..134 -> 90
+        in 135..224 -> 180
+        in 225..314 -> 270
+        else -> 0
+    }
+}
+
+internal fun rotatedVideoSize(videoWidth: Int, videoHeight: Int, rotationDegrees: Int): IntSize =
+    if (normalizeVideoRotation(rotationDegrees) == 90 || normalizeVideoRotation(rotationDegrees) == 270) {
+        IntSize(videoHeight, videoWidth)
+    } else {
+        IntSize(videoWidth, videoHeight)
+    }
+
+internal fun rotateSourcePixel(
+    point: Offset,
+    videoWidth: Int,
+    videoHeight: Int,
+    rotationDegrees: Int
+): Offset = when (normalizeVideoRotation(rotationDegrees)) {
+    90 -> Offset(videoHeight - 1f - point.y, point.x)
+    180 -> Offset(videoWidth - 1f - point.x, videoHeight - 1f - point.y)
+    270 -> Offset(point.y, videoWidth - 1f - point.x)
+    else -> point
+}
+
+internal fun unrotateSourcePixel(
+    point: Offset,
+    videoWidth: Int,
+    videoHeight: Int,
+    rotationDegrees: Int
+): Offset = when (normalizeVideoRotation(rotationDegrees)) {
+    90 -> Offset(point.y, videoHeight - 1f - point.x)
+    180 -> Offset(videoWidth - 1f - point.x, videoHeight - 1f - point.y)
+    270 -> Offset(videoWidth - 1f - point.y, point.x)
+    else -> point
+}
+
+internal fun unrotateSourceDelta(delta: Offset, rotationDegrees: Int): Offset =
+    when (normalizeVideoRotation(rotationDegrees)) {
+        90 -> Offset(delta.y, -delta.x)
+        180 -> Offset(-delta.x, -delta.y)
+        270 -> Offset(-delta.y, delta.x)
+        else -> delta
+    }
+
+internal data class PixelViewport(
+    val left: Float,
+    val top: Float,
+    val width: Float,
+    val height: Float
+)
+
+/** The sole source-pixel -> visible-video projection, independent of screen orientation. */
+internal fun sourcePixelToViewport(
+    sourcePixel: Offset,
+    sourceWidth: Int,
+    sourceHeight: Int,
+    rotationDegrees: Int,
+    viewport: PixelViewport
+): Offset {
+    val displayedSize = rotatedVideoSize(sourceWidth, sourceHeight, rotationDegrees)
+    val displayedPixel = rotateSourcePixel(sourcePixel, sourceWidth, sourceHeight, rotationDegrees)
+    return Offset(
+        viewport.left + ((displayedPixel.x + 0.5f) / displayedSize.width.coerceAtLeast(1)) * viewport.width,
+        viewport.top + ((displayedPixel.y + 0.5f) / displayedSize.height.coerceAtLeast(1)) * viewport.height
+    )
+}
+
+/** The exact inverse of [sourcePixelToViewport]. Rounding remains outside this function. */
+internal fun viewportPointToSourcePixel(
+    viewportPoint: Offset,
+    sourceWidth: Int,
+    sourceHeight: Int,
+    rotationDegrees: Int,
+    viewport: PixelViewport
+): Offset {
+    val displayedSize = rotatedVideoSize(sourceWidth, sourceHeight, rotationDegrees)
+    val displayedPixel = Offset(
+        ((viewportPoint.x - viewport.left) / viewport.width.coerceAtLeast(1f)) * displayedSize.width - 0.5f,
+        ((viewportPoint.y - viewport.top) / viewport.height.coerceAtLeast(1f)) * displayedSize.height - 0.5f
+    )
+    return unrotateSourcePixel(displayedPixel, sourceWidth, sourceHeight, rotationDegrees)
+}
+
+private fun Rect.toPixelViewport(): PixelViewport = PixelViewport(
+    left = left.toFloat(),
+    top = top.toFloat(),
+    width = width().toFloat(),
+    height = height().toFloat()
+)
+
+internal fun videoDisplayRect(
+    videoWidth: Int,
+    videoHeight: Int,
+    canvasSize: IntSize,
+    rotationDegrees: Int = 0
+): Rect {
     val canvasWidth = canvasSize.width.toFloat()
     val canvasHeight = canvasSize.height.toFloat()
-    val scale = minOf(canvasWidth / videoWidth.toFloat(), canvasHeight / videoHeight.toFloat())
-    val contentWidth = videoWidth * scale
-    val contentHeight = videoHeight * scale
+    val displayedSize = rotatedVideoSize(videoWidth, videoHeight, rotationDegrees)
+    val scale = minOf(
+        canvasWidth / displayedSize.width.coerceAtLeast(1).toFloat(),
+        canvasHeight / displayedSize.height.coerceAtLeast(1).toFloat()
+    )
+    val contentWidth = displayedSize.width * scale
+    val contentHeight = displayedSize.height * scale
     val left = ((canvasWidth - contentWidth) / 2f).toInt()
     val top = ((canvasHeight - contentHeight) / 2f).toInt()
     return Rect(left, top, (left + contentWidth).toInt(), (top + contentHeight).toInt())
 }
 
-private fun screenToVideoOffset(offset: Offset, videoWidth: Int, videoHeight: Int, canvasSize: IntSize): Offset? {
-    val rect = videoDisplayRect(videoWidth, videoHeight, canvasSize)
+private fun screenToVideoOffset(
+    offset: Offset,
+    videoWidth: Int,
+    videoHeight: Int,
+    canvasSize: IntSize,
+    rotationDegrees: Int = 0,
+    displayRect: Rect = videoDisplayRect(videoWidth, videoHeight, canvasSize, rotationDegrees)
+): Offset? {
+    val rect = displayRect
     if (offset.x < rect.left || offset.x > rect.right || offset.y < rect.top || offset.y > rect.bottom) return null
-    val x = ((offset.x - rect.left) / rect.width().coerceAtLeast(1)) * videoWidth
-    val y = ((offset.y - rect.top) / rect.height().coerceAtLeast(1)) * videoHeight
-    return Offset(x, y)
+    return viewportPointToSourcePixel(
+        viewportPoint = offset,
+        sourceWidth = videoWidth,
+        sourceHeight = videoHeight,
+        rotationDegrees = rotationDegrees,
+        viewport = rect.toPixelViewport()
+    )
 }
 
-private fun screenToVideoOffsetClamped(offset: Offset, videoWidth: Int, videoHeight: Int, canvasSize: IntSize): Offset {
-    val rect = videoDisplayRect(videoWidth, videoHeight, canvasSize)
+private fun screenToVideoOffsetClamped(
+    offset: Offset,
+    videoWidth: Int,
+    videoHeight: Int,
+    canvasSize: IntSize,
+    rotationDegrees: Int = 0,
+    displayRect: Rect = videoDisplayRect(videoWidth, videoHeight, canvasSize, rotationDegrees)
+): Offset {
+    val rect = displayRect
     val cx = offset.x.coerceIn(rect.left.toFloat(), rect.right.toFloat())
     val cy = offset.y.coerceIn(rect.top.toFloat(), rect.bottom.toFloat())
-    val x = ((cx - rect.left) / rect.width().coerceAtLeast(1)) * videoWidth
-    val y = ((cy - rect.top) / rect.height().coerceAtLeast(1)) * videoHeight
-    return Offset(x, y)
+    return viewportPointToSourcePixel(
+        viewportPoint = Offset(cx, cy),
+        sourceWidth = videoWidth,
+        sourceHeight = videoHeight,
+        rotationDegrees = rotationDegrees,
+        viewport = rect.toPixelViewport()
+    )
 }
 
-private fun videoToScreenOffset(offset: Offset, videoWidth: Int, videoHeight: Int, canvasSize: IntSize): Offset {
-    val rect = videoDisplayRect(videoWidth, videoHeight, canvasSize)
-    val x = rect.left + (offset.x / videoWidth.coerceAtLeast(1)) * rect.width()
-    val y = rect.top + (offset.y / videoHeight.coerceAtLeast(1)) * rect.height()
-    return Offset(x, y)
+/** The single rounding boundary for tracker pixel selection. */
+internal fun snapToSourcePixel(point: Offset, videoWidth: Int, videoHeight: Int): Offset = Offset(
+    point.x.roundToInt().coerceIn(0, (videoWidth - 1).coerceAtLeast(0)).toFloat(),
+    point.y.roundToInt().coerceIn(0, (videoHeight - 1).coerceAtLeast(0)).toFloat()
+)
+
+/** Maps one pixel centre into another raster without endpoint or rounding drift. */
+internal fun mapPixelCenterBetweenSpaces(
+    point: Offset,
+    fromWidth: Int,
+    fromHeight: Int,
+    toWidth: Int,
+    toHeight: Int
+): Offset = snapToSourcePixel(
+    Offset(
+        ((point.x + 0.5f) / fromWidth.coerceAtLeast(1)) * toWidth.coerceAtLeast(1) - 0.5f,
+        ((point.y + 0.5f) / fromHeight.coerceAtLeast(1)) * toHeight.coerceAtLeast(1) - 0.5f
+    ),
+    toWidth,
+    toHeight
+)
+
+internal fun decodedFrameUsesDisplayOrientation(
+    sourceWidth: Int,
+    sourceHeight: Int,
+    rotationDegrees: Int,
+    frameWidth: Int,
+    frameHeight: Int
+): Boolean {
+    val rotation = normalizeVideoRotation(rotationDegrees)
+    if (rotation != 90 && rotation != 270) return false
+    val frameAspect = frameWidth.coerceAtLeast(1).toDouble() / frameHeight.coerceAtLeast(1)
+    val sourceAspect = sourceWidth.coerceAtLeast(1).toDouble() / sourceHeight.coerceAtLeast(1)
+    val displayedSize = rotatedVideoSize(sourceWidth, sourceHeight, rotation)
+    val displayAspect = displayedSize.width.coerceAtLeast(1).toDouble() /
+        displayedSize.height.coerceAtLeast(1)
+    val sourceError = abs(frameAspect - sourceAspect) / sourceAspect.coerceAtLeast(0.000001)
+    val displayError = abs(frameAspect - displayAspect) / displayAspect.coerceAtLeast(0.000001)
+    return displayError < sourceError
+}
+
+/** Maps the authoritative source pixel into the exact raster returned by the frame decoder. */
+internal fun sourcePixelToDecodedFrame(
+    sourcePixel: Offset,
+    sourceWidth: Int,
+    sourceHeight: Int,
+    rotationDegrees: Int,
+    frameWidth: Int,
+    frameHeight: Int
+): Offset {
+    val displayOriented = decodedFrameUsesDisplayOrientation(
+        sourceWidth,
+        sourceHeight,
+        rotationDegrees,
+        frameWidth,
+        frameHeight
+    )
+    val mappingSize = if (displayOriented) {
+        rotatedVideoSize(sourceWidth, sourceHeight, rotationDegrees)
+    } else {
+        IntSize(sourceWidth, sourceHeight)
+    }
+    val mappingPixel = if (displayOriented) {
+        rotateSourcePixel(sourcePixel, sourceWidth, sourceHeight, rotationDegrees)
+    } else {
+        sourcePixel
+    }
+    return mapPixelCenterBetweenSpaces(
+        mappingPixel,
+        mappingSize.width,
+        mappingSize.height,
+        frameWidth,
+        frameHeight
+    )
+}
+
+/** Maps a tracked decoder pixel back into the same authoritative source coordinate space. */
+internal fun decodedFramePixelToSource(
+    framePixel: Offset,
+    frameWidth: Int,
+    frameHeight: Int,
+    sourceWidth: Int,
+    sourceHeight: Int,
+    rotationDegrees: Int
+): Offset {
+    val displayOriented = decodedFrameUsesDisplayOrientation(
+        sourceWidth,
+        sourceHeight,
+        rotationDegrees,
+        frameWidth,
+        frameHeight
+    )
+    val mappingSize = if (displayOriented) {
+        rotatedVideoSize(sourceWidth, sourceHeight, rotationDegrees)
+    } else {
+        IntSize(sourceWidth, sourceHeight)
+    }
+    val mappedPixel = mapPixelCenterBetweenSpaces(
+        framePixel,
+        frameWidth,
+        frameHeight,
+        mappingSize.width,
+        mappingSize.height
+    )
+    val sourcePixel = if (displayOriented) {
+        unrotateSourcePixel(mappedPixel, sourceWidth, sourceHeight, rotationDegrees)
+    } else {
+        mappedPixel
+    }
+    return snapToSourcePixel(sourcePixel, sourceWidth, sourceHeight)
+}
+
+private fun screenToSourcePixel(
+    offset: Offset,
+    videoWidth: Int,
+    videoHeight: Int,
+    canvasSize: IntSize,
+    rotationDegrees: Int = 0,
+    displayRect: Rect = videoDisplayRect(videoWidth, videoHeight, canvasSize, rotationDegrees)
+): Offset =
+    snapToSourcePixel(
+        screenToVideoOffsetClamped(
+            offset,
+            videoWidth,
+            videoHeight,
+            canvasSize,
+            rotationDegrees,
+            displayRect
+        ),
+        videoWidth,
+        videoHeight
+    )
+
+private fun videoToScreenOffset(
+    offset: Offset,
+    videoWidth: Int,
+    videoHeight: Int,
+    canvasSize: IntSize,
+    rotationDegrees: Int = 0,
+    displayRect: Rect = videoDisplayRect(videoWidth, videoHeight, canvasSize, rotationDegrees)
+): Offset {
+    return sourcePixelToViewport(
+        sourcePixel = offset,
+        sourceWidth = videoWidth,
+        sourceHeight = videoHeight,
+        rotationDegrees = rotationDegrees,
+        viewport = displayRect.toPixelViewport()
+    )
 }
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
@@ -977,6 +1336,45 @@ private fun decodeLightBitmap(context: Context, uri: Uri, maxSide: Int = 2560): 
 }
 
 @androidx.media3.common.util.UnstableApi
+private fun playerVideoSurfaceBounds(playerView: PlayerView): Rect? {
+    val textureView = playerView.videoSurfaceView as? android.view.TextureView ?: return null
+    if (textureView.width <= 0 || textureView.height <= 0) return null
+    return Rect(0, 0, textureView.width, textureView.height).also { bounds ->
+        playerView.offsetDescendantRectToMyCoords(textureView, bounds)
+    }.takeIf { it.width() > 0 && it.height() > 0 }
+}
+
+/**
+ * Returns the actual fit-centre image bounds in overlay coordinates.
+ *
+ * A TextureView may occupy the complete portrait viewport while Media3 letterboxes the video
+ * inside it. Treating the TextureView bounds as image bounds makes the error depend on screen
+ * rotation. Fitting once more is a no-op when Media3 already sized the surface to the content,
+ * and supplies the missing letterbox inset when it did not.
+ */
+@androidx.media3.common.util.UnstableApi
+private fun playerVideoContentBounds(
+    playerView: PlayerView,
+    videoWidth: Int,
+    videoHeight: Int,
+    rotationDegrees: Int
+): Rect? {
+    val surfaceBounds = playerVideoSurfaceBounds(playerView) ?: return null
+    val contentInsideSurface = videoDisplayRect(
+        videoWidth,
+        videoHeight,
+        IntSize(surfaceBounds.width(), surfaceBounds.height()),
+        rotationDegrees
+    )
+    return Rect(
+        surfaceBounds.left + contentInsideSurface.left,
+        surfaceBounds.top + contentInsideSurface.top,
+        surfaceBounds.left + contentInsideSurface.right,
+        surfaceBounds.top + contentInsideSurface.bottom
+    ).takeIf { it.width() > 0 && it.height() > 0 }
+}
+
+@androidx.media3.common.util.UnstableApi
 private fun playerPointToCapturedBitmap(
     playerView: PlayerView,
     point: Offset,
@@ -984,29 +1382,38 @@ private fun playerPointToCapturedBitmap(
 ): Offset? {
     val textureView = playerView.videoSurfaceView as? android.view.TextureView ?: return null
     if (textureView.width <= 0 || textureView.height <= 0 || bitmap.width <= 0 || bitmap.height <= 0) return null
-    val surfaceBounds = Rect(0, 0, textureView.width, textureView.height)
-    playerView.offsetDescendantRectToMyCoords(textureView, surfaceBounds)
-    if (surfaceBounds.width() <= 0 || surfaceBounds.height() <= 0) return null
+    val surfaceBounds = playerVideoSurfaceBounds(playerView) ?: return null
     val localX = point.x - surfaceBounds.left
     val localY = point.y - surfaceBounds.top
     return Offset(
-        x = (localX / surfaceBounds.width().toFloat() * bitmap.width)
+        x = (localX / surfaceBounds.width().toFloat() * bitmap.width - 0.5f)
             .coerceIn(0f, (bitmap.width - 1).toFloat()),
-        y = (localY / surfaceBounds.height().toFloat() * bitmap.height)
+        y = (localY / surfaceBounds.height().toFloat() * bitmap.height - 0.5f)
             .coerceIn(0f, (bitmap.height - 1).toFloat())
     )
 }
 
 private fun buildMagnifierBitmap(source: Bitmap, focus: Offset, radiusPx: Int = 18, outputSizePx: Int = 220): Bitmap? {
     if (source.width <= 1 || source.height <= 1) return null
-    val diameter = radiusPx * 2
-    val left = (focus.x.toInt() - radiusPx).coerceIn(0, (source.width - diameter).coerceAtLeast(0))
-    val top = (focus.y.toInt() - radiusPx).coerceIn(0, (source.height - diameter).coerceAtLeast(0))
-    val cropWidth = diameter.coerceAtMost(source.width)
-    val cropHeight = diameter.coerceAtMost(source.height)
-    if (cropWidth <= 1 || cropHeight <= 1) return null
-    val cropped = Bitmap.createBitmap(source, left, top, cropWidth, cropHeight)
-    return Bitmap.createScaledBitmap(cropped, outputSizePx, outputSizePx, false)
+    val center = snapToSourcePixel(focus, source.width, source.height)
+    // Padded, odd-sized patch: the selected pixel remains exactly central at image edges.
+    val patchSize = radiusPx * 2 + 1
+    val patch = Bitmap.createBitmap(patchSize, patchSize, Bitmap.Config.ARGB_8888)
+    val sourceLeft = (center.x.toInt() - radiusPx).coerceAtLeast(0)
+    val sourceTop = (center.y.toInt() - radiusPx).coerceAtLeast(0)
+    val sourceRight = (center.x.toInt() + radiusPx + 1).coerceAtMost(source.width)
+    val sourceBottom = (center.y.toInt() + radiusPx + 1).coerceAtMost(source.height)
+    val destinationLeft = sourceLeft - (center.x.toInt() - radiusPx)
+    val destinationTop = sourceTop - (center.y.toInt() - radiusPx)
+    android.graphics.Canvas(patch).drawBitmap(
+        source,
+        Rect(sourceLeft, sourceTop, sourceRight, sourceBottom),
+        Rect(destinationLeft, destinationTop, destinationLeft + (sourceRight - sourceLeft), destinationTop + (sourceBottom - sourceTop)),
+        android.graphics.Paint().apply { isFilterBitmap = false }
+    )
+    val scale = (outputSizePx / patchSize).coerceAtLeast(1)
+    return Bitmap.createScaledBitmap(patch, patchSize * scale, patchSize * scale, false)
+        .also { patch.recycle() }
 }
 
 private fun selectionPointFromTouch(
@@ -2106,7 +2513,16 @@ fun TrackingScreen(
     var trackerPanelSection by rememberSaveable { mutableStateOf(TrackerPanelSection.MODES) }
     var showTimeline by rememberSaveable { mutableStateOf(true) }
     val orientationPrefs = remember(context) { context.getSharedPreferences("physics_tracker_settings", Context.MODE_PRIVATE) }
-    var forceLandscapeMode by rememberSaveable { mutableStateOf(orientationPrefs.getBoolean("force_landscape", true)) }
+    val initialScreenOrientationMode = remember(orientationPrefs) {
+        orientationPrefs.getString("screen_orientation_mode", null)
+            ?.let { saved -> ScreenOrientationMode.entries.firstOrNull { it.name == saved } }
+            ?: if (orientationPrefs.getBoolean("force_landscape", true)) {
+                ScreenOrientationMode.LANDSCAPE
+            } else {
+                ScreenOrientationMode.SYSTEM
+            }
+    }
+    var screenOrientationMode by rememberSaveable { mutableStateOf(initialScreenOrientationMode) }
     var showTransportStepOptions by rememberSaveable { mutableStateOf(false) }
     var transportStepFrames by rememberSaveable { mutableIntStateOf(10) }
     var pointHistoryMode by rememberSaveable { mutableStateOf(PointHistoryMode.FADE) }
@@ -2120,6 +2536,7 @@ fun TrackingScreen(
     var activeTrack by rememberSaveable { mutableStateOf(ActiveTrack.A) }
     var multiTrackEnabled by rememberSaveable { mutableStateOf(false) }
     var showMagnifier by rememberSaveable { mutableStateOf(false) }
+    var precisionPanelMinimized by rememberSaveable { mutableStateOf(false) }
     // Start with a fitted, aspect-ratio-safe scientific view.
     var videoZoomEnabled by rememberSaveable { mutableStateOf(false) }
     var videoScale by rememberSaveable { mutableFloatStateOf(1f) }
@@ -2175,11 +2592,13 @@ fun TrackingScreen(
     var disableExistingPointSelection by rememberSaveable { mutableStateOf(false) }
     var disableExistingPointSelectionA by rememberSaveable { mutableStateOf(false) }
     var disableExistingPointSelectionB by rememberSaveable { mutableStateOf(false) }
-    var pendingSeedScreenPoint by remember { mutableStateOf<Offset?>(null) }
+    var selectedPixel by remember { mutableStateOf<SelectedPixel?>(null) }
     var pendingSeedTouchDelta by remember { mutableStateOf<Offset?>(null) }
     var autoSeedDragUsesHandle by rememberSaveable { mutableStateOf(false) }
     var playerViewRef by remember { mutableStateOf<PlayerView?>(null) }
     var sourceVideoSize by remember { mutableStateOf(IntSize.Zero) }
+    var sourceVideoRotationDegrees by remember { mutableIntStateOf(0) }
+    var autoMagnifierFrame by remember { mutableStateOf<Bitmap?>(null) }
     var autoTrackSeed by remember { mutableStateOf<AutoTrackSeed?>(null) }
     var autoTrackSeedA by remember { mutableStateOf<AutoTrackSeed?>(null) }
     var autoTrackSeedB by remember { mutableStateOf<AutoTrackSeed?>(null) }
@@ -2187,8 +2606,8 @@ fun TrackingScreen(
     var trackingRoiA by remember { mutableStateOf<TrackingRoi?>(null) }
     var trackingRoiB by remember { mutableStateOf<TrackingRoi?>(null) }
     var draggedTrackingRoiHandle by remember { mutableStateOf<TrackingRoiHandle?>(null) }
-    var pendingSeedScreenPointA by remember { mutableStateOf<Offset?>(null) }
-    var pendingSeedScreenPointB by remember { mutableStateOf<Offset?>(null) }
+    var selectedPixelA by remember { mutableStateOf<SelectedPixel?>(null) }
+    var selectedPixelB by remember { mutableStateOf<SelectedPixel?>(null) }
     var autoTrackAwaitingSeedA by rememberSaveable { mutableStateOf(false) }
     var autoTrackAwaitingSeedB by rememberSaveable { mutableStateOf(false) }
     var autoTrackSelectionModeA by rememberSaveable { mutableStateOf(false) }
@@ -2288,12 +2707,15 @@ fun TrackingScreen(
         if (!lightMode) lightTimeRecording = false
     }
     val analysisMode = dataMode && dataPanelMode == DataPanelMode.ANALYSIS
-    LaunchedEffect(forceLandscapeMode) {
-        orientationPrefs.edit().putBoolean("force_landscape", forceLandscapeMode).apply()
-        context.findActivity()?.requestedOrientation = if (forceLandscapeMode) {
-            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-        } else {
-            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    LaunchedEffect(screenOrientationMode) {
+        orientationPrefs.edit()
+            .putString("screen_orientation_mode", screenOrientationMode.name)
+            .putBoolean("force_landscape", screenOrientationMode == ScreenOrientationMode.LANDSCAPE)
+            .apply()
+        context.findActivity()?.requestedOrientation = when (screenOrientationMode) {
+            ScreenOrientationMode.LANDSCAPE -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            ScreenOrientationMode.PORTRAIT -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            ScreenOrientationMode.SYSTEM -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
     }
     val trackMode = majorMode == MajorMode.TRACK
@@ -2344,7 +2766,21 @@ fun TrackingScreen(
     val filteredTrackPoints = remember(trackPoints, activeTrackLabel) {
         trackPoints.filter { it.trackLabel == activeTrackLabel }
     }
-    val overlayTrackPoints = remember(trackPoints, canvasSize, sourceVideoSize) {
+    val overlayTrackPoints = remember(
+        trackPoints,
+        canvasSize,
+        sourceVideoSize,
+        sourceVideoRotationDegrees,
+        playerViewRef
+    ) {
+        val actualDisplayRect = playerViewRef?.let { playerView ->
+            playerVideoContentBounds(
+                playerView,
+                sourceVideoSize.width.coerceAtLeast(1),
+                sourceVideoSize.height.coerceAtLeast(1),
+                sourceVideoRotationDegrees
+            )
+        }
         trackPoints.map { point ->
             if (point.coordinateSpace == "SOURCE_VIDEO" && canvasSize != IntSize.Zero) {
                 val width = point.sourceWidth ?: sourceVideoSize.width
@@ -2354,7 +2790,14 @@ fun TrackingScreen(
                         Offset(point.pixelX.toFloat(), point.pixelY.toFloat()),
                         width,
                         height,
-                        canvasSize
+                        canvasSize,
+                        sourceVideoRotationDegrees,
+                        actualDisplayRect ?: videoDisplayRect(
+                            width,
+                            height,
+                            canvasSize,
+                            sourceVideoRotationDegrees
+                        )
                     )
                     point.copy(pixelX = display.x.toDouble(), pixelY = display.y.toDouble())
                 } else point
@@ -2375,7 +2818,7 @@ fun TrackingScreen(
         autoTrackAwaitingSeed = false
         autoTrackSelectionMode = false
         autoTrackSeed = null
-        pendingSeedScreenPoint = null
+        selectedPixel = null
         pendingSeedTouchDelta = null
         autoSeedDragUsesHandle = false
         selectedPointId = -1L
@@ -2406,14 +2849,14 @@ fun TrackingScreen(
             ActiveTrack.A -> {
                 autoTrackSeedA = autoTrackSeed
                 trackingRoiA = trackingRoi
-                pendingSeedScreenPointA = pendingSeedScreenPoint
+                selectedPixelA = selectedPixel
                 autoTrackAwaitingSeedA = autoTrackAwaitingSeed
                 autoTrackSelectionModeA = autoTrackSelectionMode
             }
             ActiveTrack.B -> {
                 autoTrackSeedB = autoTrackSeed
                 trackingRoiB = trackingRoi
-                pendingSeedScreenPointB = pendingSeedScreenPoint
+                selectedPixelB = selectedPixel
                 autoTrackAwaitingSeedB = autoTrackAwaitingSeed
                 autoTrackSelectionModeB = autoTrackSelectionMode
             }
@@ -2425,7 +2868,7 @@ fun TrackingScreen(
             ActiveTrack.A -> {
                 autoTrackSeed = autoTrackSeedA
                 trackingRoi = trackingRoiA
-                pendingSeedScreenPoint = pendingSeedScreenPointA
+                selectedPixel = selectedPixelA
                 autoTrackAwaitingSeed = autoTrackAwaitingSeedA
                 autoTrackSelectionMode = autoTrackSelectionModeA
                 disableExistingPointSelection = disableExistingPointSelectionA
@@ -2433,7 +2876,7 @@ fun TrackingScreen(
             ActiveTrack.B -> {
                 autoTrackSeed = autoTrackSeedB
                 trackingRoi = trackingRoiB
-                pendingSeedScreenPoint = pendingSeedScreenPointB
+                selectedPixel = selectedPixelB
                 autoTrackAwaitingSeed = autoTrackAwaitingSeedB
                 autoTrackSelectionMode = autoTrackSelectionModeB
                 disableExistingPointSelection = disableExistingPointSelectionB
@@ -2446,7 +2889,7 @@ fun TrackingScreen(
         } else {
             autoTrackSeedA = autoTrackSeed
             trackingRoiA = trackingRoi
-            pendingSeedScreenPointA = pendingSeedScreenPoint
+            selectedPixelA = selectedPixel
             autoTrackAwaitingSeedA = autoTrackAwaitingSeed
             autoTrackSelectionModeA = autoTrackSelectionMode
             disableExistingPointSelectionA = disableExistingPointSelection
@@ -2459,7 +2902,7 @@ fun TrackingScreen(
         if (multiTrackEnabled) {
             autoTrackSeedB = null
             trackingRoiB = null
-            pendingSeedScreenPointB = null
+            selectedPixelB = null
             autoTrackAwaitingSeedB = false
             autoTrackSelectionModeB = false
             disableExistingPointSelectionB = false
@@ -2547,7 +2990,27 @@ fun TrackingScreen(
                 val draft = draggedPointDraft
                 if (point != null && draft != null) {
                     val source = if (sourceVideoSize.width > 0 && sourceVideoSize.height > 0 && canvasSize != IntSize.Zero) {
-                        screenToVideoOffsetClamped(draft, sourceVideoSize.width, sourceVideoSize.height, canvasSize)
+                        val contentBounds = playerViewRef?.let { playerView ->
+                            playerVideoContentBounds(
+                                playerView,
+                                sourceVideoSize.width,
+                                sourceVideoSize.height,
+                                sourceVideoRotationDegrees
+                            )
+                        } ?: videoDisplayRect(
+                            sourceVideoSize.width,
+                            sourceVideoSize.height,
+                            canvasSize,
+                            sourceVideoRotationDegrees
+                        )
+                        screenToVideoOffsetClamped(
+                            draft,
+                            sourceVideoSize.width,
+                            sourceVideoSize.height,
+                            canvasSize,
+                            sourceVideoRotationDegrees,
+                            contentBounds
+                        )
                     } else draft
                     viewModel.updateSourcePoint(point, source.x.toDouble(), source.y.toDouble())
                     manualPrecisionFocusPoint = draft
@@ -2563,7 +3026,27 @@ fun TrackingScreen(
                 val point = manualPendingPoint ?: return
                 manualPrecisionFocusPoint = point
                 val source = if (sourceVideoSize.width > 0 && sourceVideoSize.height > 0 && canvasSize != IntSize.Zero) {
-                    screenToVideoOffsetClamped(point, sourceVideoSize.width, sourceVideoSize.height, canvasSize)
+                    val contentBounds = playerViewRef?.let { playerView ->
+                        playerVideoContentBounds(
+                            playerView,
+                            sourceVideoSize.width,
+                            sourceVideoSize.height,
+                            sourceVideoRotationDegrees
+                        )
+                    } ?: videoDisplayRect(
+                        sourceVideoSize.width,
+                        sourceVideoSize.height,
+                        canvasSize,
+                        sourceVideoRotationDegrees
+                    )
+                    screenToVideoOffsetClamped(
+                        point,
+                        sourceVideoSize.width,
+                        sourceVideoSize.height,
+                        canvasSize,
+                        sourceVideoRotationDegrees,
+                        contentBounds
+                    )
                 } else point
                 scope.launch {
                     viewModel.addSourceObservationTracked(
@@ -3509,6 +3992,73 @@ fun TrackingScreen(
             exportStatus = throwable.message ?: "Export failed"
         }
     }
+    // These actions are shared by Tracking > Results and the dedicated Data main tab.
+    // Keeping one action pipeline ensures the new presentation cannot diverge from the
+    // existing graph, table, analysis, track filtering, deletion, or export behaviour.
+    val onDataGraphMode: () -> Unit = {
+        majorMode = MajorMode.TRACK
+        floatingWindows.showGraph = !floatingWindows.showGraph
+        dataPanelMode = DataPanelMode.GRAPH
+        graphFullScreen = false
+        trackTrayPanel = TrackTrayPanel.DATA
+    }
+    val onDataTableMode: () -> Unit = {
+        majorMode = MajorMode.TRACK
+        floatingWindows.showTable = !floatingWindows.showTable
+        dataPanelMode = DataPanelMode.TABLE
+        graphFullScreen = false
+        trackTrayPanel = TrackTrayPanel.DATA
+    }
+    val onDataAnalysisMode: () -> Unit = {
+        majorMode = MajorMode.DATA
+        showDataTable = true
+        dataPanelMode = DataPanelMode.ANALYSIS
+        trackTrayPanel = TrackTrayPanel.DATA
+        showGraphOptions = true
+    }
+    val onDataRemoveSelectedPoint: () -> Unit = {
+        selectedGraphPointId?.let(viewModel::deletePoint)
+        selectedGraphSampleIndex = -1
+    }
+    val onDataGraphViewA: () -> Unit = {
+        showGraphTrackA = true
+        showGraphTrackB = false
+        showGraphDelta = false
+        activeTrack = ActiveTrack.A
+    }
+    val onDataGraphViewB: () -> Unit = {
+        showGraphTrackA = false
+        showGraphTrackB = true
+        showGraphDelta = false
+        activeTrack = ActiveTrack.B
+    }
+    val onDataGraphViewBoth: () -> Unit = {
+        showGraphTrackA = true
+        showGraphTrackB = true
+    }
+    val onDataTableViewA: () -> Unit = {
+        showTableTrackA = true
+        showTableTrackB = false
+        activeTrack = ActiveTrack.A
+    }
+    val onDataTableViewB: () -> Unit = {
+        showTableTrackA = false
+        showTableTrackB = true
+        activeTrack = ActiveTrack.B
+    }
+    val onDataTableViewBoth: () -> Unit = {
+        showTableTrackA = true
+        showTableTrackB = true
+    }
+    val onDataExportCsv: () -> Unit = {
+        runExportAction { artifacts -> "CSV ${artifacts.csvFile.name}" }
+    }
+    val onDataExportXlsx: () -> Unit = {
+        runExportAction { artifacts -> "XLSX ${artifacts.excelFile.name}" }
+    }
+    val onDataExportPdf: () -> Unit = {
+        runExportAction { artifacts -> "PDF ${artifacts.pdfFile.name}" }
+    }
     val selectedTrackPointPosition = remember(overlayTrackPoints, selectedPointId, draggedPointDraft) {
         if (selectedPointId == -1L) null
         else {
@@ -3519,50 +4069,105 @@ fun TrackingScreen(
     val selectedTrackPoint = remember(trackPoints, selectedPointId) {
         trackPoints.firstOrNull { it.id == selectedPointId }
     }
-    val precisionTargetPosition = remember(pendingSeedScreenPoint, manualPendingPoint, selectedTrackPointPosition) {
-        pendingSeedScreenPoint ?: manualPendingPoint ?: selectedTrackPointPosition
-    }
-    val precisionTargetLabel = remember(pendingSeedScreenPoint, manualPendingPoint, selectedPointId) {
-        when {
-            pendingSeedScreenPoint != null -> "AUTO SEED"
-            manualPendingPoint != null -> "PENDING"
-            selectedPointId != -1L -> "SELECTED"
-            else -> "NO TARGET"
+    fun currentVideoDisplayRect(): Rect =
+        playerViewRef?.let { playerView ->
+            playerVideoContentBounds(
+                playerView,
+                sourceVideoSize.width.coerceAtLeast(1),
+                sourceVideoSize.height.coerceAtLeast(1),
+                sourceVideoRotationDegrees
+            )
         }
-    }
-    val canConfirmPrecisionTarget = pendingSeedScreenPoint != null || manualPendingPoint != null || selectedPointId != -1L
+            ?: videoDisplayRect(
+                sourceVideoSize.width.coerceAtLeast(1),
+                sourceVideoSize.height.coerceAtLeast(1),
+                canvasSize,
+                sourceVideoRotationDegrees
+            )
     fun sourcePointForScreen(point: Offset): Offset =
         if (sourceVideoSize.width > 0 && sourceVideoSize.height > 0 && canvasSize != IntSize.Zero) {
-            screenToVideoOffsetClamped(point, sourceVideoSize.width, sourceVideoSize.height, canvasSize)
-        } else point
+            screenToSourcePixel(
+                point,
+                sourceVideoSize.width,
+                sourceVideoSize.height,
+                canvasSize,
+                sourceVideoRotationDegrees,
+                currentVideoDisplayRect()
+            )
+        } else Offset(point.x.roundToInt().toFloat(), point.y.roundToInt().toFloat())
     fun screenPointForSource(point: Offset): Offset =
         if (sourceVideoSize.width > 0 && sourceVideoSize.height > 0 && canvasSize != IntSize.Zero) {
-            videoToScreenOffset(point, sourceVideoSize.width, sourceVideoSize.height, canvasSize)
-        } else point
-    fun ensureTrackingRoi(screenCenter: Offset): TrackingRoi {
-        val sourceCenter = sourcePointForScreen(screenCenter)
-        return trackingRoi?.copy(center = sourceCenter) ?: TrackingRoi(center = sourceCenter)
-    }
+            videoToScreenOffset(
+                snapToSourcePixel(point, sourceVideoSize.width, sourceVideoSize.height),
+                sourceVideoSize.width,
+                sourceVideoSize.height,
+                canvasSize,
+                sourceVideoRotationDegrees,
+                currentVideoDisplayRect()
+            )
+        } else Offset(point.x.roundToInt().toFloat(), point.y.roundToInt().toFloat())
+    fun sourcePointForFrame(point: Offset, frameWidth: Int, frameHeight: Int): Offset =
+        if (sourceVideoSize.width > 0 && sourceVideoSize.height > 0) {
+            decodedFramePixelToSource(
+                framePixel = point,
+                frameWidth = frameWidth,
+                frameHeight = frameHeight,
+                sourceWidth = sourceVideoSize.width,
+                sourceHeight = sourceVideoSize.height,
+                rotationDegrees = sourceVideoRotationDegrees
+            )
+        } else {
+            snapToSourcePixel(point, frameWidth, frameHeight)
+        }
+    fun screenPointForFrame(point: Offset, frameWidth: Int, frameHeight: Int): Offset =
+        screenPointForSource(sourcePointForFrame(point, frameWidth, frameHeight))
+    fun screenPointForAutoSeed(seed: AutoTrackSeed): Offset =
+        screenPointForSource(
+            seed.sourceCenter ?: sourcePointForFrame(seed.center, seed.sourceWidth, seed.sourceHeight)
+        )
+    fun snappedScreenPoint(point: Offset): Offset = screenPointForSource(sourcePointForScreen(point))
+    fun selectedPixelForScreen(point: Offset): SelectedPixel =
+        sourcePointForScreen(point).toSelectedPixel(
+            sourceVideoSize.width.coerceAtLeast(1),
+            sourceVideoSize.height.coerceAtLeast(1)
+        )
+    fun ensureTrackingRoi(pixel: SelectedPixel): TrackingRoi =
+        trackingRoi?.copy(center = pixel.offset) ?: TrackingRoi(center = pixel.offset)
     fun updateTrackingRoiCenter(screenCenter: Offset) {
-        trackingRoi = ensureTrackingRoi(screenCenter)
-        pendingSeedScreenPoint = screenCenter
+        val newSelectedPixel = selectedPixelForScreen(screenCenter)
+        selectedPixel = newSelectedPixel
+        trackingRoi = ensureTrackingRoi(newSelectedPixel)
         if (twoTrackMode) saveCurrentTrackAutoState()
     }
     fun updateTrackingRoi(transform: (TrackingRoi) -> TrackingRoi) {
-        val current = trackingRoi ?: pendingSeedScreenPoint?.let(::ensureTrackingRoi) ?: return
+        val current = trackingRoi ?: selectedPixel?.let(::ensureTrackingRoi) ?: return
         if (current.locked) return
         val updated = transform(current)
+        val newSelectedPixel = updated.center.toSelectedPixel(
+            sourceVideoSize.width.coerceAtLeast(1),
+            sourceVideoSize.height.coerceAtLeast(1)
+        )
         trackingRoi = updated.copy(
-            center = Offset(
-                updated.center.x.coerceIn(0f, (sourceVideoSize.width - 1).coerceAtLeast(1).toFloat()),
-                updated.center.y.coerceIn(0f, (sourceVideoSize.height - 1).coerceAtLeast(1).toFloat())
-            ),
+            center = newSelectedPixel.offset,
             widthPx = updated.widthPx.coerceIn(8f, sourceVideoSize.width.coerceAtLeast(8).toFloat()),
             heightPx = updated.heightPx.coerceIn(8f, sourceVideoSize.height.coerceAtLeast(8).toFloat())
         )
-        pendingSeedScreenPoint = trackingRoi?.center?.let(::screenPointForSource)
+        selectedPixel = newSelectedPixel
         if (twoTrackMode) saveCurrentTrackAutoState()
     }
+    val autoSelectorSourcePixel = if (autoTrackEnabled) selectedPixel?.offset else null
+    val autoSelectorScreenPoint = autoSelectorSourcePixel?.let(::screenPointForSource)
+    val precisionTargetPosition = autoSelectorScreenPoint
+        ?: manualPendingPoint
+        ?: selectedTrackPointPosition
+    val precisionTargetLabel = when {
+        autoTrackEnabled && selectedPixel != null -> "AUTO SEED"
+        manualPendingPoint != null -> "PENDING"
+        selectedPointId != -1L -> "SELECTED"
+        else -> "NO TARGET"
+    }
+    val canConfirmPrecisionTarget =
+        (autoTrackEnabled && selectedPixel != null) || manualPendingPoint != null || selectedPointId != -1L
     val auxiliaryPrecisionPoint = when (val target = auxiliaryPrecisionTarget) {
         is AuxiliaryPrecisionTarget.Calibration -> {
             val current = displayedCalibration
@@ -3606,33 +4211,37 @@ fun TrackingScreen(
         is AuxiliaryPrecisionTarget.Photogate -> "GATE ${target.handle.name}"
         null -> "SELECTOR"
     }
-    val precisionTargetPixelPosition = remember(precisionTargetPosition, sourceVideoSize, canvasSize) {
-        precisionTargetPosition?.let { target ->
-            if (sourceVideoSize.width > 0 && sourceVideoSize.height > 0 && canvasSize != IntSize.Zero) {
-                screenToVideoOffsetClamped(
-                    target,
-                    sourceVideoSize.width,
-                    sourceVideoSize.height,
-                    canvasSize
-                )
-            } else {
-                target
-            }
-        }
-    }
-    suspend fun seedAutoTracker(target: Offset) {
+    val precisionTargetPixelPosition = autoSelectorSourcePixel
+        ?: precisionTargetPosition?.let(::sourcePointForScreen)
+    suspend fun seedAutoTracker(targetPixel: SelectedPixel) {
         if (canvasSize == IntSize.Zero) {
             autoTrackStatus = "Video not ready"
             return
         }
         val frameTimeUs = absoluteCurrentPos * 1000L
         val roiSnapshot = trackingRoi
+        val selectedSourcePixel = targetPixel.offset
+        val selectedSourceSize = sourceVideoSize
+        val selectedSourceRotation = sourceVideoRotationDegrees
+        val seedFrameSnapshot = autoMagnifierFrame?.takeUnless { it.isRecycled }
         val seedResult = withContext(Dispatchers.IO) {
             runCatching {
                 withMediaMetadataRetriever { retriever ->
-                    retriever.setDataSource(context, Uri.parse(videoUri))
-                    val bitmap = retriever.getFrameAtTime(frameTimeUs, MediaMetadataRetriever.OPTION_CLOSEST) ?: return@runCatching null
-                    val tappedVideoTarget = screenToVideoOffset(target, bitmap.width, bitmap.height, canvasSize) ?: return@runCatching null
+                    val bitmap = seedFrameSnapshot ?: run {
+                        retriever.setDataSource(context, Uri.parse(videoUri))
+                        retriever.getFrameAtTime(
+                            frameTimeUs,
+                            MediaMetadataRetriever.OPTION_CLOSEST
+                        )
+                    } ?: return@runCatching null
+                    val tappedVideoTarget = sourcePixelToDecodedFrame(
+                        sourcePixel = selectedSourcePixel,
+                        sourceWidth = selectedSourceSize.width,
+                        sourceHeight = selectedSourceSize.height,
+                        rotationDegrees = selectedSourceRotation,
+                        frameWidth = bitmap.width,
+                        frameHeight = bitmap.height
+                    )
                     val refinement = refineSeedPoint(bitmap, tappedVideoTarget)
                     val videoTarget = if (seedLockMode == SeedLockMode.SNAP_OBJECT) refinement.center else tappedVideoTarget
                     val customRadius = refinement.radiusPx.toInt().coerceIn(8, 48)
@@ -3700,14 +4309,29 @@ fun TrackingScreen(
             autoTrackStatus = "Tap on the video object"
             return
         }
-        autoTrackSeed = seedResult
+        val decodedSeedSourcePixel = sourcePointForFrame(
+            seedResult.center,
+            seedResult.sourceWidth,
+            seedResult.sourceHeight
+        )
+        // Exact-pixel mode must never move the canonical marker through a decoder-size
+        // round-trip. Snap-object mode intentionally accepts the tracker's refinement.
+        val finalSeedSourcePixel = if (seedLockMode == SeedLockMode.EXACT_PIXEL) {
+            targetPixel.offset
+        } else {
+            decodedSeedSourcePixel
+        }
+        autoTrackSeed = seedResult.copy(sourceCenter = finalSeedSourcePixel)
+        trackingRoi = (trackingRoi ?: TrackingRoi(center = finalSeedSourcePixel)).copy(
+            center = finalSeedSourcePixel
+        )
         autoTrackAwaitingSeed = false
         if (twoTrackMode) saveCurrentTrackAutoState()
         viewModel.addSourceObservationTracked(
             VideoPlayerViewModel.ObservationWrite(
                 requestedPositionMs = currentPos,
-                sourceX = seedResult.center.x.toDouble(),
-                sourceY = seedResult.center.y.toDouble(),
+                sourceX = finalSeedSourcePixel.x.toDouble(),
+                sourceY = finalSeedSourcePixel.y.toDouble(),
                 trackLabel = activeTrack.name,
                 massKg = activeTrackMassKg(),
                 kind = "MANUAL",
@@ -3784,10 +4408,15 @@ fun TrackingScreen(
             sourceVideoSize.height > 0 &&
             canvasSize != IntSize.Zero
         ) {
-            val videoRect = videoDisplayRect(sourceVideoSize.width, sourceVideoSize.height, canvasSize)
+            val videoRect = currentVideoDisplayRect()
+            val displayedSize = rotatedVideoSize(
+                sourceVideoSize.width,
+                sourceVideoSize.height,
+                sourceVideoRotationDegrees
+            )
             Offset(
-                deltaX * videoRect.width().toFloat() / sourceVideoSize.width.toFloat(),
-                deltaY * videoRect.height().toFloat() / sourceVideoSize.height.toFloat()
+                deltaX * videoRect.width().toFloat() / displayedSize.width.coerceAtLeast(1),
+                deltaY * videoRect.height().toFloat() / displayedSize.height.coerceAtLeast(1)
             )
         } else {
             Offset(deltaX, deltaY)
@@ -3869,27 +4498,31 @@ fun TrackingScreen(
                     y = (base.y + deltaY).coerceIn(0f, maxY)
                 )
             }
-            val sourcePoint = screenToVideoOffsetClamped(
-                base,
-                sourceVideoSize.width,
-                sourceVideoSize.height,
-                canvasSize
-            )
-            val movedSourcePoint = Offset(
+            val sourcePoint = sourcePointForScreen(base)
+            val movedSourcePoint = snapToSourcePixel(Offset(
                 x = (sourcePoint.x + deltaX).coerceIn(0f, (sourceVideoSize.width - 1).toFloat()),
                 y = (sourcePoint.y + deltaY).coerceIn(0f, (sourceVideoSize.height - 1).toFloat())
-            )
-            return videoToScreenOffset(
-                movedSourcePoint,
+            ),
                 sourceVideoSize.width,
-                sourceVideoSize.height,
-                canvasSize
+                sourceVideoSize.height
+            )
+            return screenPointForSource(
+                movedSourcePoint,
             )
         }
         showMagnifier = true
         when {
-            pendingSeedScreenPoint != null -> {
-                updateTrackingRoiCenter(moveBySourcePixels(pendingSeedScreenPoint ?: return))
+            selectedPixel != null -> {
+                val currentPixel = selectedPixel ?: return
+                val movedPixel = SelectedPixel(
+                    x = (currentPixel.x + deltaX).roundToInt()
+                        .coerceIn(0, (sourceVideoSize.width - 1).coerceAtLeast(0)),
+                    y = (currentPixel.y + deltaY).roundToInt()
+                        .coerceIn(0, (sourceVideoSize.height - 1).coerceAtLeast(0))
+                )
+                selectedPixel = movedPixel
+                trackingRoi = ensureTrackingRoi(movedPixel)
+                if (twoTrackMode) saveCurrentTrackAutoState()
                 autoTrackStatus = null
             }
             manualPendingPoint != null && selectedPointId == -1L -> {
@@ -3908,14 +4541,14 @@ fun TrackingScreen(
 
     fun confirmPrecisionTarget() {
         when {
-            pendingSeedScreenPoint != null -> {
-                val seedPoint = pendingSeedScreenPoint ?: return
+            selectedPixel != null -> {
+                val targetPixel = selectedPixel ?: return
                 autoTrackSelectionMode = false
                 autoTrackAwaitingSeed = false
                 autoTrackStatus = "Analyzing seed"
                 scope.launch {
-                    seedAutoTracker(seedPoint)
-                    pendingSeedScreenPoint = null
+                    seedAutoTracker(targetPixel)
+                    selectedPixel = null
                 }
             }
             manualPendingPoint != null || selectedPointId != -1L -> confirmManualSelection()
@@ -3942,11 +4575,12 @@ fun TrackingScreen(
                 estimatedRadiusPx = seed.estimatedRadiusPx,
                 trackingSource = "deep",
                 sourceWidth = bitmap.width,
-                sourceHeight = bitmap.height
+                sourceHeight = bitmap.height,
+                sourceCenter = sourcePointForFrame(deepMatch.state.center, bitmap.width, bitmap.height)
             )
             return AutoTrackBitmapStepResult(
                 seed = updatedSeed,
-                screenPoint = videoToScreenOffset(updatedSeed.center, bitmap.width, bitmap.height, canvasSize),
+                screenPoint = screenPointForFrame(updatedSeed.center, bitmap.width, bitmap.height),
                 statusText = "conf ${formatCalibratedValue(deepMatch.confidence)}"
             )
         }
@@ -3963,12 +4597,13 @@ fun TrackingScreen(
                 estimatedRadiusPx = seed.estimatedRadiusPx,
                 trackingSource = "mediapipe",
                 sourceWidth = bitmap.width,
-                sourceHeight = bitmap.height
+                sourceHeight = bitmap.height,
+                sourceCenter = sourcePointForFrame(mediaPipeMatch.state.center, bitmap.width, bitmap.height)
             )
             val label = mediaPipeMatch.state.label ?: "object"
             return AutoTrackBitmapStepResult(
                 seed = updatedSeed,
-                screenPoint = videoToScreenOffset(updatedSeed.center, bitmap.width, bitmap.height, canvasSize),
+                screenPoint = screenPointForFrame(updatedSeed.center, bitmap.width, bitmap.height),
                 statusText = "$label ${formatCalibratedValue(mediaPipeMatch.confidence)}"
             )
         }
@@ -3990,7 +4625,12 @@ fun TrackingScreen(
             backgroundLuma = nextClassicSeed.backgroundLuma,
             objectIsBrighter = nextClassicSeed.objectIsBrighter,
             sourceWidth = nextClassicSeed.sourceWidth,
-            sourceHeight = nextClassicSeed.sourceHeight
+            sourceHeight = nextClassicSeed.sourceHeight,
+            sourceCenter = sourcePointForFrame(
+                nextClassicSeed.center,
+                nextClassicSeed.sourceWidth,
+                nextClassicSeed.sourceHeight
+            )
         )
         val status = if (autoTrackMode == AutoTrackMode.CLASSIC_FAST) {
             "${classicUpdate.trackingSource} ${autoTrackConfidenceBucket(classicUpdate.confidence)}"
@@ -3999,7 +4639,7 @@ fun TrackingScreen(
         }
         return AutoTrackBitmapStepResult(
             seed = updatedSeed,
-            screenPoint = videoToScreenOffset(updatedSeed.center, bitmap.width, bitmap.height, canvasSize),
+            screenPoint = screenPointForFrame(updatedSeed.center, bitmap.width, bitmap.height),
             statusText = status
         )
     }
@@ -4049,7 +4689,7 @@ fun TrackingScreen(
         viewModel.pausePlayback()
         liveAutoTrackPreview += AutoTrackPreviewPoint(
             timestampUs = (trimStart + startPositionMs) * 1000L,
-            position = videoToScreenOffset(seed.center, seed.sourceWidth, seed.sourceHeight, canvasSize),
+            position = screenPointForAutoSeed(seed),
             frameNumber = startFrame,
             trackLabel = targetTrackLabel
         )
@@ -4092,7 +4732,7 @@ fun TrackingScreen(
                         if (deepMatch.confidence < minimumObservationConfidence(effectiveTrackingQuality)) {
                             return@withMediaMetadataRetriever Triple(currentSeed, trackedFrames.toLong(), "Uncertain: deep match paused for correction")
                         }
-                        val screenPoint = videoToScreenOffset(deepMatch.state.center, bitmap.width, bitmap.height, canvasSize)
+                        val screenPoint = screenPointForFrame(deepMatch.state.center, bitmap.width, bitmap.height)
                         currentSeed = currentSeed.copy(
                             center = deepMatch.state.center,
                             velocity = deepMatch.state.velocity,
@@ -4103,7 +4743,12 @@ fun TrackingScreen(
                             estimatedRadiusPx = currentSeed.estimatedRadiusPx,
                             trackingSource = "deep",
                             sourceWidth = bitmap.width,
-                            sourceHeight = bitmap.height
+                            sourceHeight = bitmap.height,
+                            sourceCenter = sourcePointForFrame(
+                                deepMatch.state.center,
+                                bitmap.width,
+                                bitmap.height
+                            )
                         )
                         autoTrackSeed = currentSeed
                         if (twoTrackMode) saveCurrentTrackAutoState()
@@ -4113,12 +4758,17 @@ fun TrackingScreen(
                             frameNumber = frame,
                             trackLabel = targetTrackLabel
                         )
+                        val sourceObservationPoint = sourcePointForFrame(
+                            currentSeed.center,
+                            currentSeed.sourceWidth,
+                            currentSeed.sourceHeight
+                        )
                         withContext(Dispatchers.Main) {
                             viewModel.addSourceObservationTracked(
                                 VideoPlayerViewModel.ObservationWrite(
                                     requestedPositionMs = localPositionMs,
-                                    sourceX = currentSeed.center.x.toDouble(),
-                                    sourceY = currentSeed.center.y.toDouble(),
+                                    sourceX = sourceObservationPoint.x.toDouble(),
+                                    sourceY = sourceObservationPoint.y.toDouble(),
                                     trackLabel = targetTrackLabel,
                                     massKg = targetTrackMassKg,
                                     algorithm = "deep-segmentation",
@@ -4145,7 +4795,7 @@ fun TrackingScreen(
                         if (mediaPipeMatch.confidence < minimumObservationConfidence(effectiveTrackingQuality)) {
                             return@withMediaMetadataRetriever Triple(currentSeed, trackedFrames.toLong(), "Uncertain: object match paused for correction")
                         }
-                        val screenPoint = videoToScreenOffset(mediaPipeMatch.state.center, bitmap.width, bitmap.height, canvasSize)
+                        val screenPoint = screenPointForFrame(mediaPipeMatch.state.center, bitmap.width, bitmap.height)
                         currentSeed = currentSeed.copy(
                             center = mediaPipeMatch.state.center,
                             velocity = mediaPipeMatch.state.velocity,
@@ -4156,7 +4806,12 @@ fun TrackingScreen(
                             estimatedRadiusPx = currentSeed.estimatedRadiusPx,
                             trackingSource = "mediapipe",
                             sourceWidth = bitmap.width,
-                            sourceHeight = bitmap.height
+                            sourceHeight = bitmap.height,
+                            sourceCenter = sourcePointForFrame(
+                                mediaPipeMatch.state.center,
+                                bitmap.width,
+                                bitmap.height
+                            )
                         )
                         autoTrackSeed = currentSeed
                         if (twoTrackMode) saveCurrentTrackAutoState()
@@ -4166,12 +4821,17 @@ fun TrackingScreen(
                             frameNumber = frame,
                             trackLabel = targetTrackLabel
                         )
+                        val sourceObservationPoint = sourcePointForFrame(
+                            currentSeed.center,
+                            currentSeed.sourceWidth,
+                            currentSeed.sourceHeight
+                        )
                         withContext(Dispatchers.Main) {
                             viewModel.addSourceObservationTracked(
                                 VideoPlayerViewModel.ObservationWrite(
                                     requestedPositionMs = localPositionMs,
-                                    sourceX = currentSeed.center.x.toDouble(),
-                                    sourceY = currentSeed.center.y.toDouble(),
+                                    sourceX = sourceObservationPoint.x.toDouble(),
+                                    sourceY = sourceObservationPoint.y.toDouble(),
                                     trackLabel = targetTrackLabel,
                                     massKg = targetTrackMassKg,
                                     algorithm = "mediapipe",
@@ -4193,7 +4853,7 @@ fun TrackingScreen(
                         classicEngine?.trackFrame(bitmap, currentSeed.toClassicSeed())
                     } ?: return@withMediaMetadataRetriever Triple(currentSeed, trackedFrames.toLong(), "Lost: no match")
                     val nextClassicSeed = classicUpdate.seed
-                    val screenPoint = videoToScreenOffset(nextClassicSeed.center, bitmap.width, bitmap.height, canvasSize)
+                    val screenPoint = screenPointForFrame(nextClassicSeed.center, bitmap.width, bitmap.height)
                     currentSeed = currentSeed.copy(
                         template = nextClassicSeed.template,
                         center = nextClassicSeed.center,
@@ -4209,7 +4869,12 @@ fun TrackingScreen(
                         objectHue = nextClassicSeed.objectHue,
                         objectSaturation = nextClassicSeed.objectSaturation,
                         sourceWidth = nextClassicSeed.sourceWidth,
-                        sourceHeight = nextClassicSeed.sourceHeight
+                        sourceHeight = nextClassicSeed.sourceHeight,
+                        sourceCenter = sourcePointForFrame(
+                            nextClassicSeed.center,
+                            nextClassicSeed.sourceWidth,
+                            nextClassicSeed.sourceHeight
+                        )
                     )
                     autoTrackSeed = currentSeed
                     if (twoTrackMode) saveCurrentTrackAutoState()
@@ -4219,12 +4884,17 @@ fun TrackingScreen(
                         frameNumber = frame,
                         trackLabel = targetTrackLabel
                     )
+                    val sourceObservationPoint = sourcePointForFrame(
+                        currentSeed.center,
+                        currentSeed.sourceWidth,
+                        currentSeed.sourceHeight
+                    )
                     withContext(Dispatchers.Main) {
                         viewModel.addSourceObservationTracked(
                             VideoPlayerViewModel.ObservationWrite(
                                 requestedPositionMs = localPositionMs,
-                                sourceX = currentSeed.center.x.toDouble(),
-                                sourceY = currentSeed.center.y.toDouble(),
+                                sourceX = sourceObservationPoint.x.toDouble(),
+                                sourceY = sourceObservationPoint.y.toDouble(),
                                 trackLabel = targetTrackLabel,
                                 massKg = targetTrackMassKg,
                                 algorithm = "classic-${classicUpdate.trackingSource}",
@@ -4354,6 +5024,7 @@ fun TrackingScreen(
         fun updateSourceSize(videoSize: VideoSize) {
             if (videoSize.width > 0 && videoSize.height > 0) {
                 sourceVideoSize = IntSize(videoSize.width, videoSize.height)
+                sourceVideoRotationDegrees = normalizeVideoRotation(videoSize.unappliedRotationDegrees)
             }
         }
         val listener = object : Player.Listener {
@@ -4366,6 +5037,34 @@ fun TrackingScreen(
         onDispose { viewModel.player.removeListener(listener) }
     }
     var magnifierBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var magnifierCenterArgb by remember { mutableStateOf<Int?>(null) }
+    val autoMagnifierFrameTimeUs = if (autoSelectorSourcePixel != null) {
+        absoluteCurrentPos * 1000L
+    } else {
+        null
+    }
+    LaunchedEffect(videoUri, autoMagnifierFrameTimeUs) {
+        if (autoMagnifierFrameTimeUs == null) {
+            autoMagnifierFrame?.recycle()
+            autoMagnifierFrame = null
+            return@LaunchedEffect
+        }
+        val decodedFrame = withContext(Dispatchers.IO) {
+            runCatching {
+                withMediaMetadataRetriever { retriever ->
+                    retriever.setDataSource(context, Uri.parse(videoUri))
+                    retriever.getFrameAtTime(
+                        autoMagnifierFrameTimeUs,
+                        MediaMetadataRetriever.OPTION_CLOSEST
+                    )
+                }
+            }.getOrNull()
+        }
+        if (decodedFrame != null) {
+            autoMagnifierFrame?.takeIf { it !== decodedFrame }?.recycle()
+            autoMagnifierFrame = decodedFrame
+        }
+    }
     val auxiliarySelectorActive = when (auxiliaryPrecisionTarget) {
         is AuxiliaryPrecisionTarget.Calibration -> calibrationMode
         is AuxiliaryPrecisionTarget.Light -> lightMode && lightWorkspaceTab == LightWorkspaceTab.SELECT
@@ -4375,7 +5074,7 @@ fun TrackingScreen(
     val magnifierFocusPoint = if (auxiliarySelectorActive) {
         auxiliaryPrecisionPoint
     } else {
-        pendingSeedScreenPoint
+        autoSelectorScreenPoint
             ?: manualPendingPoint
             ?: selectedTrackPointPosition
             ?: manualPrecisionFocusPoint
@@ -4392,21 +5091,71 @@ fun TrackingScreen(
         else -> 16
     }
 
-    LaunchedEffect(shouldShowCustomMagnifier, magnifierFocusPoint, playerViewRef, magnifierZoom, canvasSize, videoScale, videoOffsetX, videoOffsetY) {
+    LaunchedEffect(
+        shouldShowCustomMagnifier,
+        magnifierFocusPoint,
+        autoSelectorSourcePixel,
+        autoMagnifierFrame,
+        playerViewRef,
+        magnifierZoom,
+        canvasSize,
+        sourceVideoSize,
+        sourceVideoRotationDegrees,
+        videoScale,
+        videoOffsetX,
+        videoOffsetY
+    ) {
         if (!shouldShowCustomMagnifier) {
             magnifierBitmap = null
+            magnifierCenterArgb = null
+            return@LaunchedEffect
+        }
+        if (autoSelectorSourcePixel != null) {
+            val decodedFrame = autoMagnifierFrame ?: run {
+                magnifierBitmap = null
+                magnifierCenterArgb = null
+                return@LaunchedEffect
+            }
+            val mappedFocus = sourcePixelToDecodedFrame(
+                sourcePixel = autoSelectorSourcePixel,
+                sourceWidth = sourceVideoSize.width,
+                sourceHeight = sourceVideoSize.height,
+                rotationDegrees = sourceVideoRotationDegrees,
+                frameWidth = decodedFrame.width,
+                frameHeight = decodedFrame.height
+            )
+            magnifierCenterArgb = decodedFrame.getPixel(mappedFocus.x.toInt(), mappedFocus.y.toInt())
+            magnifierBitmap = buildMagnifierBitmap(
+                source = decodedFrame,
+                focus = mappedFocus,
+                radiusPx = magnifierRadiusPx,
+                outputSizePx = 260
+            )
             return@LaunchedEffect
         }
         val currentPlayerView = playerViewRef ?: run {
             magnifierBitmap = null
+            magnifierCenterArgb = null
             return@LaunchedEffect
         }
         while (shouldShowCustomMagnifier) {
             val focus = magnifierFocusPoint ?: break
             val captured = capturePlayerBitmap(currentPlayerView)
             captured?.let { bitmap ->
+                // Map the exact final marker position into the captured TextureView. This is the
+                // only magnifier projection path, so rotation, scaling and fit geometry cannot
+                // produce a second interpretation of the selected pixel.
                 val mappedFocus = playerPointToCapturedBitmap(currentPlayerView, focus, bitmap)
-                    ?: screenToVideoOffsetClamped(focus, bitmap.width, bitmap.height, canvasSize)
+                    ?: screenToVideoOffsetClamped(
+                        focus,
+                        bitmap.width,
+                        bitmap.height,
+                        canvasSize,
+                        0,
+                        currentVideoDisplayRect()
+                    )
+                val sampledPixel = snapToSourcePixel(mappedFocus, bitmap.width, bitmap.height)
+                magnifierCenterArgb = bitmap.getPixel(sampledPixel.x.toInt(), sampledPixel.y.toInt())
                 magnifierBitmap = buildMagnifierBitmap(
                     source = bitmap,
                     focus = mappedFocus,
@@ -4595,12 +5344,53 @@ fun TrackingScreen(
         runCatching { keyboardFocusRequester.requestFocus() }
     }
 
+    val workspaceBindings = TrackingWorkspaceBindings(
+        focusRequester = keyboardFocusRequester,
+        coroutineScope = scope,
+        isLandscape = isLandscape,
+        analysisMode = analysisMode,
+        trackMode = trackMode,
+        manualTrackingMode = manualTrackingMode,
+        calibrationMode = calibrationMode,
+        dataMode = dataMode,
+        lightMode = lightMode,
+        twoTrackMode = twoTrackMode,
+        hasPreparedAutoTrack = hasPreparedAutoTrack,
+        useLandscapeSplit = useLandscapeSplit,
+        showLandscapeLiveGraph = showLandscapeLiveGraph,
+        runExportAction = runExportAction,
+        onDataGraphMode = onDataGraphMode,
+        onDataTableMode = onDataTableMode,
+        onDataAnalysisMode = onDataAnalysisMode,
+        onDataRemoveSelectedPoint = onDataRemoveSelectedPoint,
+        onDataGraphViewA = onDataGraphViewA,
+        onDataGraphViewB = onDataGraphViewB,
+        onDataGraphViewBoth = onDataGraphViewBoth,
+        onDataTableViewA = onDataTableViewA,
+        onDataTableViewB = onDataTableViewB,
+        onDataTableViewBoth = onDataTableViewBoth,
+        onDataExportCsv = onDataExportCsv,
+        onDataExportXlsx = onDataExportXlsx,
+        onDataExportPdf = onDataExportPdf
+    )
+
     PhysicsTrackerWorkspaceTheme {
+    val isLandscape = workspaceBindings.isLandscape
+    val analysisMode = workspaceBindings.analysisMode
+    val trackMode = workspaceBindings.trackMode
+    val manualTrackingMode = workspaceBindings.manualTrackingMode
+    val calibrationMode = workspaceBindings.calibrationMode
+    val dataMode = workspaceBindings.dataMode
+    val lightMode = workspaceBindings.lightMode
+    val twoTrackMode = workspaceBindings.twoTrackMode
+    val hasPreparedAutoTrack = workspaceBindings.hasPreparedAutoTrack
+    val useLandscapeSplit = workspaceBindings.useLandscapeSplit
+    val showLandscapeLiveGraph = workspaceBindings.showLandscapeLiveGraph
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(PhysicsColorBackground)
-            .focusRequester(keyboardFocusRequester)
+            .focusRequester(workspaceBindings.focusRequester)
             .focusable()
             .onKeyEvent { event: androidx.compose.ui.input.key.KeyEvent ->
                 if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
@@ -4710,6 +5500,10 @@ fun TrackingScreen(
                     trackingRoi,
                     analysisMode,
                     disableExistingPointSelection,
+                    canvasSize,
+                    sourceVideoSize,
+                    sourceVideoRotationDegrees,
+                    playerViewRef,
                     videoScale,
                     videoOffsetX,
                     videoOffsetY
@@ -4771,7 +5565,7 @@ fun TrackingScreen(
                                 selectedPointId = -1L
                                 draggedPointDraft = null
                                 draggedPointTouchDelta = null
-                                manualPendingPoint = overlayOffset
+                                manualPendingPoint = snappedScreenPoint(overlayOffset)
                                 manualPendingTouchDelta = Offset.Zero
                                 manualDragUsesHandle = false
                             }
@@ -4795,7 +5589,7 @@ fun TrackingScreen(
                                 return@detectTapGestures
                             }
                             if (trackMode && autoTrackEnabled && autoTrackSeed != null && !autoTrackRunning) {
-                                scope.launch { runAutoTrackToEnd() }
+                                workspaceBindings.coroutineScope.launch { runAutoTrackToEnd() }
                                 return@detectTapGestures
                             }
                             val hit = if (disableExistingPointSelection) null else (
@@ -4816,7 +5610,7 @@ fun TrackingScreen(
                                 confirmManualSelection()
                             } else {
                                 selectedPointId = -1L
-                                manualPendingPoint = overlayOffset
+                                manualPendingPoint = snappedScreenPoint(overlayOffset)
                                 manualPendingTouchDelta = Offset.Zero
                                 confirmManualSelection()
                             }
@@ -4838,6 +5632,9 @@ fun TrackingScreen(
                     calibrationMode,
                     calibration,
                     canvasSize,
+                    sourceVideoSize,
+                    sourceVideoRotationDegrees,
+                    playerViewRef,
                     lightMode,
                     lightWorkspaceTab,
                     lightTool,
@@ -4887,7 +5684,7 @@ fun TrackingScreen(
                                 return@detectDragGestures
                             }
                             if (trackMode && autoTrackEnabled && (autoTrackSelectionMode || autoTrackAwaitingSeed)) {
-                                val resolvedPoint = pendingSeedScreenPoint
+                                val resolvedPoint = autoSelectorScreenPoint
                                     ?: selectionPointFromTouch(overlayOffset, canvasSize, autoSelectTouchOffsetPx)
                                 updateTrackingRoiCenter(resolvedPoint)
                                 val handleCenter = autoSeedHandleCenter(resolvedPoint, canvasSize, autoSeedHandleLiftPx)
@@ -4911,7 +5708,7 @@ fun TrackingScreen(
                                     }
                                 }
                                 if (disableExistingPointSelection) {
-                                    manualPendingPoint = overlayOffset
+                                    manualPendingPoint = snappedScreenPoint(overlayOffset)
                                     manualPendingTouchDelta = Offset.Zero
                                     manualDragUsesHandle = false
                                     return@detectDragGestures
@@ -4938,7 +5735,7 @@ fun TrackingScreen(
                                     draggedPointTouchDelta = if (manualDragUsesHandle) Offset(0f, -manualHandleLiftPx) else Offset.Zero
                                     return@detectDragGestures
                                 }
-                                manualPendingPoint = overlayOffset
+                                manualPendingPoint = snappedScreenPoint(overlayOffset)
                                 manualPendingTouchDelta = Offset.Zero
                                 manualDragUsesHandle = false
                                 return@detectDragGestures
@@ -5070,16 +5867,21 @@ fun TrackingScreen(
                         val currentCalibration = calibrationDraft ?: displayedCalibration
                         if (draggedTrackingRoiHandle != null) {
                             change.consume()
-                            val videoRect = videoDisplayRect(
+                            val videoRect = currentVideoDisplayRect()
+                            val displayedSize = rotatedVideoSize(
                                 sourceVideoSize.width.coerceAtLeast(1),
                                 sourceVideoSize.height.coerceAtLeast(1),
-                                canvasSize
+                                sourceVideoRotationDegrees
                             )
-                            val sourceDelta = Offset(
-                                dragAmount.x * sourceVideoSize.width.coerceAtLeast(1) / videoRect.width().coerceAtLeast(1),
-                                dragAmount.y * sourceVideoSize.height.coerceAtLeast(1) / videoRect.height().coerceAtLeast(1)
+                            val displayedDelta = Offset(
+                                dragAmount.x * displayedSize.width / videoRect.width().coerceAtLeast(1),
+                                dragAmount.y * displayedSize.height / videoRect.height().coerceAtLeast(1)
                             )
-                            val handle = draggedTrackingRoiHandle ?: return@detectDragGestures
+                            val sourceDelta = unrotateSourceDelta(displayedDelta, sourceVideoRotationDegrees)
+                            val handle = sourceRoiHandleForDisplay(
+                                draggedTrackingRoiHandle ?: return@detectDragGestures,
+                                sourceVideoRotationDegrees
+                            )
                             updateTrackingRoi { roi ->
                                 var center = roi.center
                                 var width = roi.widthPx
@@ -5190,19 +5992,19 @@ fun TrackingScreen(
                             val maxX = canvasSize.width.toFloat().coerceAtLeast(1f)
                             val maxY = canvasSize.height.toFloat().coerceAtLeast(1f)
                             val dragDelta = draggedPointTouchDelta ?: Offset.Zero
-                            draggedPointDraft = Offset(
+                            draggedPointDraft = snappedScreenPoint(Offset(
                                 (overlayPosition.x + dragDelta.x).coerceIn(0f, maxX),
                                 (overlayPosition.y + dragDelta.y).coerceIn(0f, maxY)
-                            )
+                            ))
                         } else if (!autoTrackEnabled && !calibrationMode && manualPendingPoint != null) {
                             change.consume()
                             val maxX = canvasSize.width.toFloat().coerceAtLeast(1f)
                             val maxY = canvasSize.height.toFloat().coerceAtLeast(1f)
                             val dragDelta = manualPendingTouchDelta ?: Offset.Zero
-                            manualPendingPoint = Offset(
+                            manualPendingPoint = snappedScreenPoint(Offset(
                                 (overlayPosition.x + dragDelta.x).coerceIn(0f, maxX),
                                 (overlayPosition.y + dragDelta.y).coerceIn(0f, maxY)
-                            )
+                            ))
                         }
                     }
                 }
@@ -5348,7 +6150,7 @@ fun TrackingScreen(
                 drawLine(selectorColor, Offset(pending.x, pending.y + centerGap), Offset(pending.x, pending.y + arm), stroke)
             }
             if (trackMode && autoTrackEnabled) {
-                pendingSeedScreenPoint?.let { pending ->
+                autoSelectorScreenPoint?.let { pending ->
                     val color = overlayColorFromArgb(manualSelectorColorArgb)
                     val gap = 2.dp.toPx()
                     val arm = 10.dp.toPx()
@@ -5369,13 +6171,19 @@ fun TrackingScreen(
                 trackingRoi?.let { roi ->
                     if (autoTrackSelectionMode && !roi.locked) {
                         val center = screenPointForSource(roi.center)
-                        val videoRect = videoDisplayRect(
-                            sourceVideoSize.width.coerceAtLeast(1),
-                            sourceVideoSize.height.coerceAtLeast(1),
-                            canvasSize
-                        )
-                        val width = roi.widthPx * videoRect.width() / sourceVideoSize.width.coerceAtLeast(1)
-                        val height = roi.heightPx * videoRect.height() / sourceVideoSize.height.coerceAtLeast(1)
+                        val videoRect = currentVideoDisplayRect()
+                        val normalizedRotation = normalizeVideoRotation(sourceVideoRotationDegrees)
+                        val quarterTurn = normalizedRotation == 90 || normalizedRotation == 270
+                        val width = if (quarterTurn) {
+                            roi.heightPx * videoRect.width() / sourceVideoSize.height.coerceAtLeast(1)
+                        } else {
+                            roi.widthPx * videoRect.width() / sourceVideoSize.width.coerceAtLeast(1)
+                        }
+                        val height = if (quarterTurn) {
+                            roi.widthPx * videoRect.height() / sourceVideoSize.width.coerceAtLeast(1)
+                        } else {
+                            roi.heightPx * videoRect.height() / sourceVideoSize.height.coerceAtLeast(1)
+                        }
                         drawRect(
                             LabAccent.copy(alpha = 0.65f),
                             Offset(center.x - width / 2f, center.y - height / 2f),
@@ -5384,8 +6192,10 @@ fun TrackingScreen(
                         )
                     }
                 }
-                autoTrackSeed?.let { seed ->
-                    val center = videoToScreenOffset(seed.center, seed.sourceWidth, seed.sourceHeight, canvasSize)
+                autoTrackSeed?.takeIf {
+                    !autoTrackSelectionMode && selectedPixel == null
+                }?.let { seed ->
+                    val center = screenPointForAutoSeed(seed)
                     val lineStroke = if (showMagnifier || autoTrackSelectionMode) 0.8.dp.toPx() else 1.dp.toPx()
                     val centerGap = 3.dp.toPx()
                     val seedColor = overlayColorFromArgb(manualSelectorColorArgb)
@@ -5687,7 +6497,12 @@ fun TrackingScreen(
 
         // 3. UI Layer
         val persistentPrecisionVisible =
-            (trackMode && (manualTrackingMode || (autoTrackEnabled && pendingSeedScreenPoint != null))) ||
+            (trackMode && (
+                manualPendingPoint != null ||
+                    selectedPointId != -1L ||
+                    draggedPointDraft != null ||
+                    (autoTrackEnabled && selectedPixel != null)
+                )) ||
                 (auxiliarySelectorActive && auxiliaryPrecisionPoint != null)
         val topChromeModifier = if (useLandscapeSplit) {
             Modifier
@@ -5886,7 +6701,7 @@ fun TrackingScreen(
                                     hasPreparedAutoTrack = hasPreparedAutoTrack,
                                     trackTrayPanel = trackTrayPanel,
                                     selectedPointId = selectedPointId,
-                                    pendingSeedScreenPoint = pendingSeedScreenPoint,
+                                    hasSelectedPixel = selectedPixel != null,
                                     magnifierBitmap = magnifierBitmap,
                                     precisionTargetPosition = precisionTargetPixelPosition,
                                     precisionTargetLabel = precisionTargetLabel,
@@ -5928,7 +6743,7 @@ fun TrackingScreen(
                                         pendingSeedTouchDelta = null
                                         liveAutoTrackPreview.clear()
                                         autoTrackSeed = if (twoTrackMode) autoTrackSeed else null
-                                        pendingSeedScreenPoint = if (twoTrackMode) pendingSeedScreenPoint else null
+                                        selectedPixel = if (twoTrackMode) selectedPixel else null
                                         autoTrackAwaitingSeed = if (twoTrackMode) autoTrackSeed == null else true
                                         trackTrayPanel = TrackTrayPanel.TARGET
                                         if (twoTrackMode) saveCurrentTrackAutoState()
@@ -5944,6 +6759,7 @@ fun TrackingScreen(
                                         pendingSeedTouchDelta = null
                                         liveAutoTrackPreview.clear()
                                         autoTrackAwaitingSeed = false
+                                        selectedPixel = null
                                         showMagnifier = true
                                         trackTrayPanel = null
                                         if (twoTrackMode) saveCurrentTrackAutoState()
@@ -5973,7 +6789,7 @@ fun TrackingScreen(
                                         autoTrackMode = it
                                         autoTrackSeed = null
                                         autoTrackAwaitingSeed = autoTrackEnabled
-                                        pendingSeedScreenPoint = null
+                                        selectedPixel = null
                                         if (twoTrackMode) saveCurrentTrackAutoState()
                                     },
                                     onTargetProfileSelected = {
@@ -6023,41 +6839,52 @@ fun TrackingScreen(
                                     },
                                     onBeginAutoSelect = {
                                         majorMode = MajorMode.TRACK
+                                        viewModel.pausePlayback()
                                         autoTrackEnabled = true
                                         autoTrackSelectionMode = true
                                         autoTrackAwaitingSeed = true
                                         autoTrackRunning = false
+                                        showMagnifier = true
+                                        precisionPanelMinimized = false
                                         liveAutoTrackPreview.clear()
-                                        val initialPoint = autoTrackSeed?.let {
-                                            videoToScreenOffset(it.center, it.sourceWidth, it.sourceHeight, canvasSize)
-                                        } ?: pendingSeedScreenPoint ?: Offset(
-                                            canvasSize.width.coerceAtLeast(1) / 2f,
-                                            canvasSize.height.coerceAtLeast(1) / 2f
+                                        val initialSelectedPixel = autoTrackSeed?.let { seed ->
+                                            sourcePointForFrame(
+                                                seed.center,
+                                                seed.sourceWidth,
+                                                seed.sourceHeight
+                                            ).toSelectedPixel(
+                                                sourceVideoSize.width.coerceAtLeast(1),
+                                                sourceVideoSize.height.coerceAtLeast(1)
+                                            )
+                                        } ?: selectedPixel ?: SelectedPixel(
+                                            x = (sourceVideoSize.width.coerceAtLeast(1) - 1) / 2,
+                                            y = (sourceVideoSize.height.coerceAtLeast(1) - 1) / 2
                                         )
-                                        updateTrackingRoiCenter(initialPoint)
+                                        selectedPixel = initialSelectedPixel
+                                        trackingRoi = ensureTrackingRoi(initialSelectedPixel)
                                         pendingSeedTouchDelta = Offset.Zero
                                         if (twoTrackMode) saveCurrentTrackAutoState()
                                     },
                                     onConfirmAutoSeed = {
-                                        val seedPoint = pendingSeedScreenPoint
-                                        if (seedPoint == null) {
+                                        val targetPixel = selectedPixel
+                                        if (targetPixel == null) {
                                             Unit
                                         } else {
-                                        autoTrackSelectionMode = false
-                                        autoTrackAwaitingSeed = false
-                                        pendingSeedTouchDelta = null
-                                        if (twoTrackMode) saveCurrentTrackAutoState()
-                                        scope.launch {
-                                            seedAutoTracker(seedPoint)
-                                            pendingSeedScreenPoint = null
+                                            autoTrackSelectionMode = false
+                                            autoTrackAwaitingSeed = false
+                                            pendingSeedTouchDelta = null
                                             if (twoTrackMode) saveCurrentTrackAutoState()
-                                        }
+                                            workspaceBindings.coroutineScope.launch {
+                                                seedAutoTracker(targetPixel)
+                                                selectedPixel = null
+                                                if (twoTrackMode) saveCurrentTrackAutoState()
+                                            }
                                         }
                                     },
                                     onCancelAutoSeed = {
                                         autoTrackSelectionMode = false
                                         autoTrackAwaitingSeed = false
-                                        pendingSeedScreenPoint = null
+                                        selectedPixel = null
                                         pendingSeedTouchDelta = null
                                         if (twoTrackMode) saveCurrentTrackAutoState()
                                     },
@@ -6075,74 +6902,27 @@ fun TrackingScreen(
                                             draggedPointTouchDelta = null
                                         }
                                     },
-                                    onNextAutoTrack = { scope.launch { runPreparedAutoTracks(1) } },
-                                    onTrackAllAuto = { scope.launch { runPreparedAutoTracksToEnd() } },
+                                    onNextAutoTrack = { workspaceBindings.coroutineScope.launch { runPreparedAutoTracks(1) } },
+                                    onTrackAllAuto = { workspaceBindings.coroutineScope.launch { runPreparedAutoTracksToEnd() } },
                                     autoTrackRunning = autoTrackRunning,
                                     onStopAutoTrack = {
                                         autoTrackRunning = false
                                         liveAutoTrackPreview.clear()
                                     },
                                     onTrackingStepSelected = { trackingStepOption = it },
-                                    onGraphMode = {
-                                        majorMode = MajorMode.TRACK
-                                        floatingWindows.showGraph = !floatingWindows.showGraph
-                                        dataPanelMode = DataPanelMode.GRAPH
-                                        graphFullScreen = false
-                                        trackTrayPanel = TrackTrayPanel.DATA
-                                    },
-                                    onTableMode = {
-                                        majorMode = MajorMode.TRACK
-                                        floatingWindows.showTable = !floatingWindows.showTable
-                                        dataPanelMode = DataPanelMode.TABLE
-                                        graphFullScreen = false
-                                        trackTrayPanel = TrackTrayPanel.DATA
-                                    },
-                                    onAnalysisMode = {
-                                        majorMode = MajorMode.DATA
-                                        showDataTable = true
-                                        dataPanelMode = DataPanelMode.ANALYSIS
-                                        trackTrayPanel = TrackTrayPanel.DATA  // keep tray open
-                                        // Always open the Analysis Desk when entering Analysis Mode
-                                        showGraphOptions = true
-                                    },
-                                    onRemoveSelectedGraphPoint = {
-                                        selectedGraphPointId?.let(viewModel::deletePoint)
-                                        selectedGraphSampleIndex = -1
-                                    },
-                                    onToggleShowData = { showDataTable = !showDataTable },
-                                    onGraphViewA = {
-                                        showGraphTrackA = true
-                                        showGraphTrackB = false
-                                        showGraphDelta = false
-                                        activeTrack = ActiveTrack.A
-                                    },
-                                    onGraphViewB = {
-                                        showGraphTrackA = false
-                                        showGraphTrackB = true
-                                        showGraphDelta = false
-                                        activeTrack = ActiveTrack.B
-                                    },
-                                    onGraphViewBoth = {
-                                        showGraphTrackA = true
-                                        showGraphTrackB = true
-                                    },
-                                    onTableViewA = {
-                                        showTableTrackA = true
-                                        showTableTrackB = false
-                                        activeTrack = ActiveTrack.A
-                                    },
-                                    onTableViewB = {
-                                        showTableTrackA = false
-                                        showTableTrackB = true
-                                        activeTrack = ActiveTrack.B
-                                    },
-                                    onTableViewBoth = {
-                                        showTableTrackA = true
-                                        showTableTrackB = true
-                                    },
-                                    onExportCsv = { runExportAction { artifacts -> "CSV ${artifacts.csvFile.name}" } },
-                                    onExportXlsx = { runExportAction { artifacts -> "XLSX ${artifacts.excelFile.name}" } },
-                                    onExportPdf = { runExportAction { artifacts -> "PDF ${artifacts.pdfFile.name}" } }
+                                    onGraphMode = workspaceBindings.onDataGraphMode,
+                                    onTableMode = workspaceBindings.onDataTableMode,
+                                    onAnalysisMode = workspaceBindings.onDataAnalysisMode,
+                                    onRemoveSelectedGraphPoint = workspaceBindings.onDataRemoveSelectedPoint,
+                                    onGraphViewA = workspaceBindings.onDataGraphViewA,
+                                    onGraphViewB = workspaceBindings.onDataGraphViewB,
+                                    onGraphViewBoth = workspaceBindings.onDataGraphViewBoth,
+                                    onTableViewA = workspaceBindings.onDataTableViewA,
+                                    onTableViewB = workspaceBindings.onDataTableViewB,
+                                    onTableViewBoth = workspaceBindings.onDataTableViewBoth,
+                                    onExportCsv = workspaceBindings.onDataExportCsv,
+                                    onExportXlsx = workspaceBindings.onDataExportXlsx,
+                                    onExportPdf = workspaceBindings.onDataExportPdf
                                 )
                             }
                             BottomMainTab.CAL -> {
@@ -6249,6 +7029,26 @@ fun TrackingScreen(
                                             fontFamily = FontFamily.Monospace
                                         )
                                     }
+                                    Surface(
+                                        color = PhysicsColorSurfaceVariant.copy(alpha = 0.72f),
+                                        shape = RoundedCornerShape(10.dp),
+                                        border = androidx.compose.foundation.BorderStroke(1.dp, PhysicsColorDivider),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .horizontalScroll(rememberScrollState())
+                                                .padding(horizontal = 6.dp, vertical = 5.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text("TRIM CLIP", color = LabGold, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
+                                            BottomDeckButton("SET START", accent = LabGold) { viewModel.setTrimStart() }
+                                            BottomDeckButton("SET END", accent = LabGold) { viewModel.setTrimEnd() }
+                                            BottomDeckButton("RESET TRIM", accent = LabSurfaceStrong) { viewModel.resetTrim() }
+                                        }
+                                    }
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -6323,7 +7123,35 @@ fun TrackingScreen(
                                     }
                                 }
                             }
-                            BottomMainTab.DATA -> Unit
+                            BottomMainTab.DATA -> {
+                                DataBottomTrayContent(
+                                    showDataTable = showDataTable,
+                                    showGraphOverlay = floatingWindows.showGraph,
+                                    showTableOverlay = floatingWindows.showTable,
+                                    dataPanelMode = dataPanelMode,
+                                    twoTrackMode = twoTrackMode,
+                                    showGraphTrackA = showGraphTrackA,
+                                    showGraphTrackB = showGraphTrackB,
+                                    showTableTrackA = showTableTrackA,
+                                    showTableTrackB = showTableTrackB,
+                                    trackAColor = trackColor("A", trackAColorArgb, trackBColorArgb),
+                                    trackBColor = trackColor("B", trackAColorArgb, trackBColorArgb),
+                                    selectedGraphPointId = selectedGraphPointId,
+                                    onGraphMode = workspaceBindings.onDataGraphMode,
+                                    onTableMode = workspaceBindings.onDataTableMode,
+                                    onAnalysisMode = workspaceBindings.onDataAnalysisMode,
+                                    onRemoveSelectedGraphPoint = workspaceBindings.onDataRemoveSelectedPoint,
+                                    onGraphViewA = workspaceBindings.onDataGraphViewA,
+                                    onGraphViewB = workspaceBindings.onDataGraphViewB,
+                                    onGraphViewBoth = workspaceBindings.onDataGraphViewBoth,
+                                    onTableViewA = workspaceBindings.onDataTableViewA,
+                                    onTableViewB = workspaceBindings.onDataTableViewB,
+                                    onTableViewBoth = workspaceBindings.onDataTableViewBoth,
+                                    onExportCsv = workspaceBindings.onDataExportCsv,
+                                    onExportXlsx = workspaceBindings.onDataExportXlsx,
+                                    onExportPdf = workspaceBindings.onDataExportPdf
+                                )
+                            }
                             BottomMainTab.LIGHT -> {
                                 LightTopTray(
                                     workspaceTab = lightWorkspaceTab,
@@ -6399,7 +7227,7 @@ fun TrackingScreen(
                                     precisionTargetPosition = precisionTargetPixelPosition,
                                     precisionTargetLabel = precisionTargetLabel,
                                     canConfirmPrecisionTarget = canConfirmPrecisionTarget,
-                                    forceLandscapeMode = forceLandscapeMode,
+                                    screenOrientationMode = screenOrientationMode,
                                     twoTrackMode = twoTrackMode,
                                     showTimeline = showTimeline,
                                     showAnalysisGuides = showAnalysisGuides,
@@ -6418,6 +7246,7 @@ fun TrackingScreen(
                                     onToggleView = { moreTrayPanel = if (moreTrayPanel == MoreTrayPanel.VIEW) null else MoreTrayPanel.VIEW },
                                     onToggleColors = { moreTrayPanel = if (moreTrayPanel == MoreTrayPanel.COLORS) null else MoreTrayPanel.COLORS },
                                     onToggleExport = { moreTrayPanel = if (moreTrayPanel == MoreTrayPanel.EXPORT) null else MoreTrayPanel.EXPORT },
+                                    onToggleScreen = { moreTrayPanel = if (moreTrayPanel == MoreTrayPanel.SCREEN) null else MoreTrayPanel.SCREEN },
                                     onResetTrim = { viewModel.resetTrim() },
                                     onTrimStart = { viewModel.setTrimStart() },
                                     onTrimEnd = { viewModel.setTrimEnd() },
@@ -6442,7 +7271,7 @@ fun TrackingScreen(
                                     onPrecisionStepChange = { seedNudgeStepPx = it },
                                     onNudgePrecision = { dx, dy -> nudgePrecisionTarget(dx, dy) },
                                     onConfirmPrecisionTarget = { confirmPrecisionTarget() },
-                                    onForceLandscapeModeChange = { forceLandscapeMode = it },
+                                    onScreenOrientationModeChange = { screenOrientationMode = it },
                                     onToggleTrackCountMode = { toggleTrackCountMode() },
                                     onShowTimelineChange = { showTimeline = it },
                                     onShowAnalysisGuidesChange = { showAnalysisGuides = it },
@@ -6457,17 +7286,17 @@ fun TrackingScreen(
                                             OverlayColorRole.CALIBRATION -> calibrationColorArgb = color.toArgb()
                                         }
                                     },
-                                    onExportCsv = { runExportAction { artifacts -> "CSV ${artifacts.csvFile.name}" } },
-                                    onExportXlsx = { runExportAction { artifacts -> "XLSX ${artifacts.excelFile.name}" } },
-                                    onExportPdf = { runExportAction { artifacts -> "PDF ${artifacts.pdfFile.name}" } },
+                                    onExportCsv = { workspaceBindings.runExportAction { artifacts -> "CSV ${artifacts.csvFile.name}" } },
+                                    onExportXlsx = { workspaceBindings.runExportAction { artifacts -> "XLSX ${artifacts.excelFile.name}" } },
+                                    onExportPdf = { workspaceBindings.runExportAction { artifacts -> "PDF ${artifacts.pdfFile.name}" } },
                                     onShareCsv = {
-                                        runExportAction { artifacts ->
+                                        workspaceBindings.runExportAction { artifacts ->
                                             shareExportFile(context, artifacts.csvFile, "text/csv")
                                             "Shared CSV"
                                         }
                                     },
                                     onSharePdf = {
-                                        runExportAction { artifacts ->
+                                        workspaceBindings.runExportAction { artifacts ->
                                             shareExportFile(context, artifacts.pdfFile, "application/pdf")
                                             "Shared PDF"
                                         }
@@ -6479,6 +7308,7 @@ fun TrackingScreen(
                         }
                         MainBottomNavRow(
                             activeBottomTab = activeBottomTab,
+                            dataShortcutSelected = activeBottomTab == BottomMainTab.DATA,
                             playWhenReady = playWhenReady,
                             onToggleCal = {
                                 val opening = activeBottomTab != BottomMainTab.CAL
@@ -6513,9 +7343,24 @@ fun TrackingScreen(
                                     videoFocusMode = false
                                 }
                             },
+                            onOpenData = {
+                                // Data is a first-class tray. Analysis keeps its full desk;
+                                // graph and table continue to use the video workspace.
+                                activeBottomTab = BottomMainTab.DATA
+                                if (!(majorMode == MajorMode.DATA && dataPanelMode == DataPanelMode.ANALYSIS)) {
+                                    majorMode = MajorMode.TRACK
+                                }
+                                trackTrayPanel = TrackTrayPanel.DATA
+                                videoFocusMode = false
+                            },
                             onTogglePlayPause = {
                                 activeBottomTab = BottomMainTab.PLAY
                                 viewModel.togglePlayPause()
+                            },
+                            onOpenView = {
+                                // Main-tab shortcut for the unchanged More > Tracks & View panel.
+                                activeBottomTab = BottomMainTab.MORE
+                                moreTrayPanel = MoreTrayPanel.VIEW
                             },
                             onToggleLight = {
                                 val opening = activeBottomTab != BottomMainTab.LIGHT
@@ -6570,6 +7415,14 @@ fun TrackingScreen(
                         .height((configuration.screenHeightDp * floatingWindows.graph.height).dp)
                         .zIndex(6f)
                         .padding(top = 34.dp)
+                    dataMode && showDataTable && dataPanelMode == DataPanelMode.GRAPH -> Modifier
+                        // Returning from Analysis must restore a compact graph above the video,
+                        // not leave an unconstrained graph surface filling the whole workspace.
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .fillMaxHeight(if (isLandscape) 0.38f else 0.36f)
+                        .zIndex(6f)
+                        .padding(top = dataPanelTopPadding, start = 8.dp, end = 8.dp, bottom = 8.dp)
                     else -> Modifier
                         .align(Alignment.TopCenter)
                         .zIndex(6f)
@@ -6615,6 +7468,7 @@ fun TrackingScreen(
             onSelectedGraphSampleIndexChange = { selectedGraphSampleIndex = it },
             onExitAnalysisMode = {
                 dataPanelMode = DataPanelMode.GRAPH
+                graphFullScreen = false
                 showDataTable = true
                 showGraphOptions = true
             },
@@ -6740,17 +7594,17 @@ fun TrackingScreen(
             onStartLightTimeRecording = ::startLightTimeRecording,
             onStopLightTimeRecording = ::stopLightTimeRecording,
             onClearAllLightTimeSeries = ::clearAllLightTimeSeries,
-            onLightExportCsv = { runExportAction { artifacts -> "CSV ${artifacts.csvFile.name}" } },
-            onLightExportXlsx = { runExportAction { artifacts -> "XLSX ${artifacts.excelFile.name}" } },
-            onLightExportPdf = { runExportAction { artifacts -> "PDF ${artifacts.pdfFile.name}" } },
+            onLightExportCsv = { workspaceBindings.runExportAction { artifacts -> "CSV ${artifacts.csvFile.name}" } },
+            onLightExportXlsx = { workspaceBindings.runExportAction { artifacts -> "XLSX ${artifacts.excelFile.name}" } },
+            onLightExportPdf = { workspaceBindings.runExportAction { artifacts -> "PDF ${artifacts.pdfFile.name}" } },
             onAnalysisExportCsv = {
-                runExportAction { artifacts ->
+                workspaceBindings.runExportAction { artifacts ->
                     shareExportFile(context, artifacts.csvFile, "text/csv")
                     "Shared CSV"
                 }
             },
             onAnalysisExportXlsx = {
-                runExportAction { artifacts ->
+                workspaceBindings.runExportAction { artifacts ->
                     shareExportFile(
                         context,
                         artifacts.excelFile,
@@ -6760,7 +7614,7 @@ fun TrackingScreen(
                 }
             },
             onAnalysisExportPdf = {
-                runExportAction { artifacts ->
+                workspaceBindings.runExportAction { artifacts ->
                     shareExportFile(context, artifacts.pdfFile, "application/pdf")
                     "Shared PDF"
                 }
@@ -6779,7 +7633,9 @@ fun TrackingScreen(
             lightTimeSeriesC = lightTimeSeriesC.toList(),
             lightTimeSeriesD = lightTimeSeriesD.toList(),
             onClearLightTimeSeries = ::clearLightTimeSeries,
-            graphFullScreen = graphFullScreen,
+            // Full-screen belongs only to the Analysis desk. It must never be carried into
+            // the video workspace, where it would override the graph window's bounds.
+            graphFullScreen = graphFullScreen && analysisMode,
             onGraphFullScreenChange = { graphFullScreen = it },
             analysisTrackingControls = {
                 TrackingRoiControlPanel(
@@ -6802,21 +7658,26 @@ fun TrackingScreen(
                         }
                     },
                     onReset = {
-                        val center = trackingRoi?.center
-                            ?: pendingSeedScreenPoint?.let(::sourcePointForScreen)
-                            ?: Offset(
-                                sourceVideoSize.width.coerceAtLeast(1) / 2f,
-                                sourceVideoSize.height.coerceAtLeast(1) / 2f
+                        val resetPixel = selectedPixel
+                            ?: trackingRoi?.center?.toSelectedPixel(
+                                sourceVideoSize.width.coerceAtLeast(1),
+                                sourceVideoSize.height.coerceAtLeast(1)
                             )
-                        trackingRoi = TrackingRoi(center = center)
+                            ?: SelectedPixel(
+                                x = (sourceVideoSize.width.coerceAtLeast(1) - 1) / 2,
+                                y = (sourceVideoSize.height.coerceAtLeast(1) - 1) / 2
+                            )
+                        selectedPixel = resetPixel
+                        trackingRoi = TrackingRoi(center = resetPixel.offset)
                         saveCurrentTrackAutoState()
                     },
                     onToggleLock = {
-                        val fallbackCenter = pendingSeedScreenPoint ?: Offset(
-                            canvasSize.width.coerceAtLeast(1) / 2f,
-                            canvasSize.height.coerceAtLeast(1) / 2f
+                        val fallbackPixel = selectedPixel ?: SelectedPixel(
+                            x = (sourceVideoSize.width.coerceAtLeast(1) - 1) / 2,
+                            y = (sourceVideoSize.height.coerceAtLeast(1) - 1) / 2
                         )
-                        trackingRoi = (trackingRoi ?: ensureTrackingRoi(fallbackCenter)).let { roi ->
+                        selectedPixel = fallbackPixel
+                        trackingRoi = (trackingRoi ?: ensureTrackingRoi(fallbackPixel)).let { roi ->
                             roi.copy(locked = !roi.locked)
                         }
                         saveCurrentTrackAutoState()
@@ -6827,7 +7688,7 @@ fun TrackingScreen(
 
         if (!analysisMode && persistentPrecisionVisible) {
             val isTrackingPrecision =
-                trackMode && (manualTrackingMode || (autoTrackEnabled && pendingSeedScreenPoint != null))
+                trackMode && (manualTrackingMode || (autoTrackEnabled && selectedPixel != null))
             val precisionColor = if (isTrackingPrecision) {
                 if (activeTrack == ActiveTrack.A) overlayColorFromArgb(trackAColorArgb)
                 else overlayColorFromArgb(trackBColorArgb)
@@ -6839,6 +7700,22 @@ fun TrackingScreen(
                     null -> LabAccent
                 }
             }
+            if (precisionPanelMinimized) {
+                FilledTonalButton(
+                    onClick = { precisionPanelMinimized = false },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 8.dp, end = 8.dp)
+                        .zIndex(10f),
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = precisionColor.copy(alpha = 0.9f),
+                        contentColor = PhysicsColorBackground
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("⌖  MAG", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.labelSmall)
+                }
+            } else {
             PrecisionInstrumentPanel(
                 title = if (isTrackingPrecision) {
                     if (manualTrackingMode) "MANUAL ${activeTrack.name}" else "AUTO ${activeTrack.name}"
@@ -6847,7 +7724,9 @@ fun TrackingScreen(
                 },
                 trackColor = precisionColor,
                 magnifierBitmap = magnifierBitmap,
-                targetPosition = if (isTrackingPrecision) precisionTargetPosition else auxiliaryPrecisionPoint,
+                magnifierRadiusPx = magnifierRadiusPx,
+                sampledCenterArgb = magnifierCenterArgb,
+                targetPosition = if (isTrackingPrecision) precisionTargetPixelPosition else auxiliaryPrecisionPoint,
                 targetLabel = if (isTrackingPrecision) precisionTargetLabel else auxiliaryPrecisionLabel,
                 stepPx = seedNudgeStepPx,
                 canConfirm = if (isTrackingPrecision) precisionTargetPosition != null else auxiliaryPrecisionPoint != null,
@@ -6886,12 +7765,14 @@ fun TrackingScreen(
                     floatingWindows.precision.width = if (isLandscape) 0.42f else 0.92f
                     floatingWindows.precision.height = if (isLandscape) 0.48f else 0.28f
                 },
-                onClose = {},
-                showClose = false,
+                onClose = { precisionPanelMinimized = true },
+                showClose = true,
+                closeSymbol = "−",
                 layer = 10f,
                 minimumWidthFraction = if (isLandscape) 0.38f else 0.72f,
                 minimumHeightFraction = if (isLandscape) 0.44f else 0.22f
             )
+            }
         }
 
         if (!videoFocusMode && trackMode && floatingWindows.showTable) {
@@ -7020,15 +7901,6 @@ fun TrackingScreen(
                     }
                 }
             }
-            Box(
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .fillMaxWidth(0.68f)
-                    .wrapContentWidth(Alignment.End)
-                    .width(1.dp)
-                    .background(PhysicsColorDivider)
-                    .zIndex(1.5f)
-            )
         }
 
         if (graphFullScreen && analysisMode) {
@@ -7070,6 +7942,7 @@ fun TrackingScreen(
                     onSampleSelected = { selectedGraphSampleIndex = it },
                     onExitAnalysisMode = {
                         dataPanelMode = DataPanelMode.GRAPH
+                        graphFullScreen = false
                         showDataTable = true
                         showGraphOptions = true
                     },
@@ -7121,9 +7994,9 @@ fun TrackingScreen(
                     relativeMomentum = relativeMomentum,
                     momentumUnitLabel = momentumUnitLabel,
                     showAnalysisGuides = showAnalysisGuides,
-                    onExportCsv = { runExportAction { artifacts -> "CSV ${artifacts.csvFile.name}" } },
-                    onExportXlsx = { runExportAction { artifacts -> "XLSX ${artifacts.excelFile.name}" } },
-                    onExportPdf = { runExportAction { artifacts -> "PDF ${artifacts.pdfFile.name}" } },
+                    onExportCsv = { workspaceBindings.runExportAction { artifacts -> "CSV ${artifacts.csvFile.name}" } },
+                    onExportXlsx = { workspaceBindings.runExportAction { artifacts -> "XLSX ${artifacts.excelFile.name}" } },
+                    onExportPdf = { workspaceBindings.runExportAction { artifacts -> "PDF ${artifacts.pdfFile.name}" } },
                     isLandscape = isLandscape,
                     modifier = Modifier.fillMaxSize()
                 )
@@ -7136,10 +8009,13 @@ fun TrackingScreen(
 @Composable
 private fun MainBottomNavRow(
     activeBottomTab: BottomMainTab?,
+    dataShortcutSelected: Boolean,
     playWhenReady: Boolean,
     onToggleCal: () -> Unit,
     onToggleTrack: () -> Unit,
+    onOpenData: () -> Unit,
     onTogglePlayPause: () -> Unit,
+    onOpenView: () -> Unit,
     onToggleLight: () -> Unit,
     onToggleMore: () -> Unit
 ) {
@@ -7155,6 +8031,9 @@ private fun MainBottomNavRow(
         }
         BottomNavIconButton(symbol = "∿", label = "Tracking", selected = activeBottomTab == BottomMainTab.TRACK, accent = PhysicsColorPrimary, prominent = true) {
             onToggleTrack()
+        }
+        BottomNavIconButton(symbol = "▦", label = "Data", selected = dataShortcutSelected, accent = LabAccent, prominent = true) {
+            onOpenData()
         }
         Button(
             onClick = onTogglePlayPause,
@@ -7172,6 +8051,9 @@ private fun MainBottomNavRow(
                 Text(if (playWhenReady) "⏸" else "▶", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.titleLarge)
                 Text(if (playWhenReady) "Pause" else "Play", style = MaterialTheme.typography.labelSmall)
             }
+        }
+        BottomNavIconButton(symbol = "◉", label = "View", selected = activeBottomTab == BottomMainTab.MORE, accent = LabGold, prominent = true) {
+            onOpenView()
         }
         BottomNavIconButton(symbol = "☼", label = "Light", selected = activeBottomTab == BottomMainTab.LIGHT, accent = PhysicsColorAccent, prominent = true) {
             onToggleLight()
@@ -7196,6 +8078,7 @@ private fun FloatingOverlayChrome(
     onReset: () -> Unit,
     onClose: () -> Unit,
     showClose: Boolean = true,
+    closeSymbol: String = "×",
     layer: Float = 8f,
     minimumWidthFraction: Float? = null,
     minimumHeightFraction: Float = 0.32f
@@ -7215,6 +8098,12 @@ private fun FloatingOverlayChrome(
     val currentYFraction by rememberUpdatedState(yFraction)
     val currentWidthFraction by rememberUpdatedState(widthFraction)
     val currentHeightFraction by rememberUpdatedState(heightFraction)
+    // Keep gesture-local geometry while dragging. Recomposition is asynchronous, so reading
+    // only the state value on every pointer event can reuse a stale value and make resizing jump.
+    var dragXFraction by remember { mutableFloatStateOf(xFraction) }
+    var dragYFraction by remember { mutableFloatStateOf(yFraction) }
+    var resizeWidthFraction by remember { mutableFloatStateOf(widthFraction) }
+    var resizeHeightFraction by remember { mutableFloatStateOf(heightFraction) }
     Surface(
         color = Color.Black.copy(alpha = 0.62f),
         contentColor = Color.White,
@@ -7232,14 +8121,18 @@ private fun FloatingOverlayChrome(
                     .weight(1f)
                     .fillMaxHeight()
                     .pointerInput(configuration.orientation) {
-                        detectDragGestures { change, dragAmount ->
+                        detectDragGestures(
+                            onDragStart = {
+                                dragXFraction = currentXFraction
+                                dragYFraction = currentYFraction
+                            }
+                        ) { change, dragAmount ->
                             change.consume()
-                            onMove(
-                                (currentXFraction + dragAmount.x / screenWidthPx)
-                                    .coerceIn(0f, (1f - currentWidthFraction).coerceAtLeast(0f)),
-                                (currentYFraction + dragAmount.y / screenHeightPx)
-                                    .coerceIn(0f, (1f - currentHeightFraction).coerceAtLeast(0f))
-                            )
+                            dragXFraction = (dragXFraction + dragAmount.x / screenWidthPx)
+                                .coerceIn(0f, (1f - currentWidthFraction).coerceAtLeast(0f))
+                            dragYFraction = (dragYFraction + dragAmount.y / screenHeightPx)
+                                .coerceIn(0f, (1f - currentHeightFraction).coerceAtLeast(0f))
+                            onMove(dragXFraction, dragYFraction)
                         }
                     }
                     .padding(horizontal = 10.dp),
@@ -7255,7 +8148,7 @@ private fun FloatingOverlayChrome(
             }
             if (showClose) {
                 TextButton(onClick = onClose, modifier = Modifier.size(34.dp), contentPadding = PaddingValues(0.dp)) {
-                    Text("×", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                    Text(closeSymbol, color = Color.White, style = MaterialTheme.typography.titleMedium)
                 }
             }
         }
@@ -7270,16 +8163,21 @@ private fun FloatingOverlayChrome(
             .size(34.dp)
             .zIndex(layer)
             .pointerInput(configuration.orientation, isLandscape) {
-                detectDragGestures { change, dragAmount ->
+                detectDragGestures(
+                    onDragStart = {
+                        resizeWidthFraction = currentWidthFraction
+                        resizeHeightFraction = currentHeightFraction
+                    }
+                ) { change, dragAmount ->
                     change.consume()
                     val minimumWidth = minimumWidthFraction ?: if (isLandscape) 0.32f else 0.62f
                     val maximumWidth = (0.98f - currentXFraction).coerceAtLeast(minimumWidth)
                     val maximumHeight = (0.98f - currentYFraction).coerceAtLeast(minimumHeightFraction)
-                    onResize(
-                        (currentWidthFraction + dragAmount.x / screenWidthPx).coerceIn(minimumWidth, maximumWidth),
-                        (currentHeightFraction + dragAmount.y / screenHeightPx)
-                            .coerceIn(minimumHeightFraction, maximumHeight)
-                    )
+                    resizeWidthFraction = (resizeWidthFraction + dragAmount.x / screenWidthPx)
+                        .coerceIn(minimumWidth, maximumWidth)
+                    resizeHeightFraction = (resizeHeightFraction + dragAmount.y / screenHeightPx)
+                        .coerceIn(minimumHeightFraction, maximumHeight)
+                    onResize(resizeWidthFraction, resizeHeightFraction)
                 }
             }
     ) {
@@ -7624,7 +8522,7 @@ private fun WorkspaceOverlayPanels(
 }
 
 @Composable
-private fun TrackDataTray(
+private fun DataBottomTrayContent(
     showDataTable: Boolean,
     showGraphOverlay: Boolean,
     showTableOverlay: Boolean,
@@ -7641,7 +8539,6 @@ private fun TrackDataTray(
     onTableMode: () -> Unit,
     onAnalysisMode: () -> Unit,
     onRemoveSelectedGraphPoint: () -> Unit,
-    onToggleShowData: () -> Unit,
     onGraphViewA: () -> Unit,
     onGraphViewB: () -> Unit,
     onGraphViewBoth: () -> Unit,
@@ -7652,38 +8549,177 @@ private fun TrackDataTray(
     onExportXlsx: () -> Unit,
     onExportPdf: () -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+    val analysisSelected = showDataTable && dataPanelMode == DataPanelMode.ANALYSIS
+    val openWindowCount = listOf(showGraphOverlay, showTableOverlay).count { it }
+    val workspaceStatus = when {
+        analysisSelected -> "ANALYSIS DESK"
+        openWindowCount == 2 -> "2 WINDOWS OPEN"
+        showGraphOverlay -> "GRAPH OPEN"
+        showTableOverlay -> "TABLE OPEN"
+        else -> "READY"
+    }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
         Row(
-            modifier = Modifier.horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            BottomDeckButton("GRAPH", selected = showGraphOverlay, accent = LabAccent) { onGraphMode() }
-            BottomDeckButton("TABLE", selected = showTableOverlay, accent = LabSuccess) { onTableMode() }
-            BottomDeckButton("ANALYSIS", selected = showDataTable && dataPanelMode == DataPanelMode.ANALYSIS, accent = LabGold) { onAnalysisMode() }
-            if (selectedGraphPointId != null) {
-                BottomDeckButton("REMOVE", enabled = true, accent = LabDanger) { onRemoveSelectedGraphPoint() }
+            Column {
+                Text(
+                    "DATA WORKSPACE",
+                    color = PhysicsColorOnBackground,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    "Graph and Table can stay open together",
+                    color = PhysicsColorOnSurface.copy(alpha = 0.62f),
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
+            Surface(
+                color = LabAccent.copy(alpha = 0.13f),
+                shape = RoundedCornerShape(10.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, LabAccent.copy(alpha = 0.38f))
+            ) {
+                Text(
+                    workspaceStatus,
+                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+                    color = LabAccent,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace
+                )
             }
         }
+
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            DataWorkspaceButton(
+                symbol = "⌁",
+                title = "GRAPH",
+                detail = if (showGraphOverlay) "Tap again to hide" else "Plot tracked motion",
+                selected = showGraphOverlay,
+                accent = LabAccent,
+                onClick = onGraphMode
+            )
+            DataWorkspaceButton(
+                symbol = "▦",
+                title = "TABLE",
+                detail = if (showTableOverlay) "Tap again to hide" else "Inspect every value",
+                selected = showTableOverlay,
+                accent = LabSuccess,
+                onClick = onTableMode
+            )
+            DataWorkspaceButton(
+                symbol = "Σ",
+                title = "ANALYSIS",
+                detail = "Open analysis desk",
+                selected = analysisSelected,
+                accent = LabGold,
+                onClick = onAnalysisMode
+            )
+        }
+
         if (twoTrackMode) {
+            Text(
+                if (dataPanelMode == DataPanelMode.TABLE) "TABLE OBJECTS" else "GRAPH OBJECTS",
+                color = PhysicsColorOnSurface.copy(alpha = 0.66f),
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = FontFamily.Monospace
+            )
             Row(
                 modifier = Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 if (dataPanelMode == DataPanelMode.TABLE) {
-                    BottomDeckButton("TABLE A", selected = showTableTrackA && !showTableTrackB, accent = trackAColor) { onTableViewA() }
-                    BottomDeckButton("TABLE B", selected = showTableTrackB && !showTableTrackA, accent = trackBColor) { onTableViewB() }
-                    BottomDeckButton("BOTH", selected = showTableTrackA && showTableTrackB, accent = LabGold) { onTableViewBoth() }
+                    BottomDeckButton("TABLE: A ONLY", selected = showTableTrackA && !showTableTrackB, accent = trackAColor) { onTableViewA() }
+                    BottomDeckButton("TABLE: B ONLY", selected = showTableTrackB && !showTableTrackA, accent = trackBColor) { onTableViewB() }
+                    BottomDeckButton("TABLE: A + B", selected = showTableTrackA && showTableTrackB, accent = LabGold) { onTableViewBoth() }
                 } else {
-                    BottomDeckButton("PLOT A", selected = showGraphTrackA && !showGraphTrackB, accent = trackAColor) { onGraphViewA() }
-                    BottomDeckButton("PLOT B", selected = showGraphTrackB && !showGraphTrackA, accent = trackBColor) { onGraphViewB() }
-                    BottomDeckButton("TOGETHER", selected = showGraphTrackA && showGraphTrackB, accent = LabGold) { onGraphViewBoth() }
+                    BottomDeckButton("PLOT: A ONLY", selected = showGraphTrackA && !showGraphTrackB, accent = trackAColor) { onGraphViewA() }
+                    BottomDeckButton("PLOT: B ONLY", selected = showGraphTrackB && !showGraphTrackA, accent = trackBColor) { onGraphViewB() }
+                    BottomDeckButton("PLOT: A + B", selected = showGraphTrackA && showGraphTrackB, accent = LabGold) { onGraphViewBoth() }
                 }
             }
         }
+
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "EXPORT",
+                color = PhysicsColorOnSurface.copy(alpha = 0.66f),
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = FontFamily.Monospace
+            )
+            BottomDeckButton("CSV", accent = LabSuccess, onClick = onExportCsv)
+            BottomDeckButton("XLSX", accent = LabAccent, onClick = onExportXlsx)
+            BottomDeckButton("PDF", accent = LabGold, onClick = onExportPdf)
+            if (selectedGraphPointId != null) {
+                BottomDeckButton("REMOVE SELECTED POINT", accent = LabDanger, onClick = onRemoveSelectedGraphPoint)
+            }
         }
     }
+}
+
+@Composable
+private fun DataWorkspaceButton(
+    symbol: String,
+    title: String,
+    detail: String,
+    selected: Boolean,
+    accent: Color,
+    onClick: () -> Unit
+) {
+    OutlinedButton(
+        onClick = onClick,
+        colors = ButtonDefaults.outlinedButtonColors(
+            containerColor = if (selected) accent.copy(alpha = 0.20f) else PhysicsColorSurfaceVariant.copy(alpha = 0.78f),
+            contentColor = if (selected) accent else PhysicsColorOnBackground
+        ),
+        border = androidx.compose.foundation.BorderStroke(
+            if (selected) 2.dp else 1.dp,
+            if (selected) accent.copy(alpha = 0.82f) else PhysicsColorDivider
+        ),
+        shape = RoundedCornerShape(13.dp),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+        modifier = Modifier
+            .widthIn(min = 146.dp)
+            .heightIn(min = 64.dp)
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.Start,
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(symbol, color = accent, style = MaterialTheme.typography.titleMedium, fontFamily = FontFamily.Monospace)
+                Text(title, style = MaterialTheme.typography.labelLarge, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+            }
+            Text(
+                detail,
+                color = if (selected) accent.copy(alpha = 0.86f) else PhysicsColorOnSurface.copy(alpha = 0.58f),
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1
+            )
+        }
+    }
+}
+
 @Composable
 private fun TrackGraphOverlay(
     analysisMode: Boolean,
@@ -7868,7 +8904,7 @@ private fun TrackBottomTrayContent(
     hasPreparedAutoTrack: Boolean,
     trackTrayPanel: TrackTrayPanel?,
     selectedPointId: Long,
-    pendingSeedScreenPoint: Offset?,
+    hasSelectedPixel: Boolean,
     magnifierBitmap: Bitmap?,
     precisionTargetPosition: Offset?,
     precisionTargetLabel: String,
@@ -7934,7 +8970,6 @@ private fun TrackBottomTrayContent(
     onTableMode: () -> Unit,
     onAnalysisMode: () -> Unit,
     onRemoveSelectedGraphPoint: () -> Unit,
-    onToggleShowData: () -> Unit,
     onGraphViewA: () -> Unit,
     onGraphViewB: () -> Unit,
     onGraphViewBoth: () -> Unit,
@@ -8168,9 +9203,9 @@ private fun TrackBottomTrayContent(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (autoTrackEnabled) {
-                        BottomDeckButton(if (pendingSeedScreenPoint == null) "SELECT" else "ADJUST", accent = LabAccent) { onBeginAutoSelect() }
-                        BottomDeckButton("CONFIRM", enabled = pendingSeedScreenPoint != null, accent = LabSuccess) { onConfirmAutoSeed() }
-                        BottomDeckButton("CANCEL", enabled = pendingSeedScreenPoint != null, accent = LabDanger) { onCancelAutoSeed() }
+                        BottomDeckButton(if (!hasSelectedPixel) "SELECT" else "ADJUST", accent = LabAccent) { onBeginAutoSelect() }
+                        BottomDeckButton("CONFIRM", enabled = hasSelectedPixel, accent = LabSuccess) { onConfirmAutoSeed() }
+                        BottomDeckButton("CANCEL", enabled = hasSelectedPixel, accent = LabDanger) { onCancelAutoSeed() }
                         BottomDeckButton("EXACT", selected = seedLockMode == SeedLockMode.EXACT_PIXEL, accent = LabSuccess) { onSetExactSeedLock() }
                         BottomDeckButton("SNAP", selected = seedLockMode == SeedLockMode.SNAP_OBJECT, accent = LabGold) { onSetSnapSeedLock() }
                     } else {
@@ -8217,7 +9252,7 @@ private fun TrackBottomTrayContent(
                 }
             }
             TrackTrayPanel.DATA -> {
-                TrackDataTray(
+                DataBottomTrayContent(
                     showDataTable = showDataTable,
                     showGraphOverlay = showGraphOverlay,
                     showTableOverlay = showTableOverlay,
@@ -8234,7 +9269,6 @@ private fun TrackBottomTrayContent(
                     onTableMode = onTableMode,
                     onAnalysisMode = onAnalysisMode,
                     onRemoveSelectedGraphPoint = onRemoveSelectedGraphPoint,
-                    onToggleShowData = onToggleShowData,
                     onGraphViewA = onGraphViewA,
                     onGraphViewB = onGraphViewB,
                     onGraphViewBoth = onGraphViewBoth,
@@ -8247,6 +9281,70 @@ private fun TrackBottomTrayContent(
                 )
             }
             null -> Unit
+        }
+    }
+}
+
+@Composable
+private fun ColourTargetIndicator(
+    role: OverlayColorRole,
+    trackAColorArgb: Int,
+    trackBColorArgb: Int,
+    selectorColorArgb: Int,
+    vectorColorArgb: Int,
+    calibrationColorArgb: Int
+) {
+    val colour = roleColor(role, trackAColorArgb, trackBColorArgb, selectorColorArgb, vectorColorArgb, calibrationColorArgb)
+    val title = when (role) {
+        OverlayColorRole.TRACK_A -> "TRACK A / OBJECT 1"
+        OverlayColorRole.TRACK_B -> "TRACK B / OBJECT 2"
+        OverlayColorRole.MANUAL_SELECTOR -> "PIXEL PICKER MARKER"
+        OverlayColorRole.VECTOR -> "MOTION PATH"
+        OverlayColorRole.CALIBRATION -> "CALIBRATION STICK"
+    }
+    Surface(
+        color = colour.copy(alpha = 0.12f),
+        shape = RoundedCornerShape(10.dp),
+        border = androidx.compose.foundation.BorderStroke(2.dp, colour),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Canvas(modifier = Modifier.width(92.dp).height(34.dp)) {
+                val midY = size.height / 2f
+                when (role) {
+                    OverlayColorRole.TRACK_A,
+                    OverlayColorRole.TRACK_B -> {
+                        drawLine(colour, Offset(8.dp.toPx(), midY), Offset(size.width - 8.dp.toPx(), midY), 4.dp.toPx())
+                        drawCircle(colour, 8.dp.toPx(), Offset(size.width / 2f, midY))
+                        drawCircle(Color.White, 3.dp.toPx(), Offset(size.width / 2f, midY))
+                    }
+                    OverlayColorRole.MANUAL_SELECTOR -> {
+                        val center = Offset(size.width / 2f, midY)
+                        drawCircle(colour, 9.dp.toPx(), center, style = Stroke(2.dp.toPx()))
+                        drawLine(colour, center - Offset(18.dp.toPx(), 0f), center + Offset(18.dp.toPx(), 0f), 2.dp.toPx())
+                        drawLine(colour, center - Offset(0f, 14.dp.toPx()), center + Offset(0f, 14.dp.toPx()), 2.dp.toPx())
+                    }
+                    OverlayColorRole.VECTOR -> {
+                        drawLine(colour, Offset(8.dp.toPx(), midY), Offset(size.width - 14.dp.toPx(), midY), 4.dp.toPx())
+                        drawLine(colour, Offset(size.width - 14.dp.toPx(), midY), Offset(size.width - 27.dp.toPx(), midY - 9.dp.toPx()), 3.dp.toPx())
+                        drawLine(colour, Offset(size.width - 14.dp.toPx(), midY), Offset(size.width - 27.dp.toPx(), midY + 9.dp.toPx()), 3.dp.toPx())
+                    }
+                    OverlayColorRole.CALIBRATION -> {
+                        val left = 10.dp.toPx(); val right = size.width - 10.dp.toPx()
+                        drawLine(colour, Offset(left, midY), Offset(right, midY), 4.dp.toPx())
+                        drawLine(colour, Offset(left, midY - 11.dp.toPx()), Offset(left, midY + 11.dp.toPx()), 3.dp.toPx())
+                        drawLine(colour, Offset(right, midY - 11.dp.toPx()), Offset(right, midY + 11.dp.toPx()), 3.dp.toPx())
+                    }
+                }
+            }
+            Column {
+                Text("EDITING COLOUR", color = PhysicsColorOnSurface.copy(alpha = 0.7f), style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
+                Text(title, color = colour, style = MaterialTheme.typography.labelLarge, fontFamily = FontFamily.Monospace)
+            }
         }
     }
 }
@@ -8267,7 +9365,7 @@ private fun MoreBottomTrayContent(
     precisionTargetPosition: Offset?,
     precisionTargetLabel: String,
     canConfirmPrecisionTarget: Boolean,
-    forceLandscapeMode: Boolean,
+    screenOrientationMode: ScreenOrientationMode,
     twoTrackMode: Boolean,
     showTimeline: Boolean,
     showAnalysisGuides: Boolean,
@@ -8283,6 +9381,7 @@ private fun MoreBottomTrayContent(
     onToggleView: () -> Unit,
     onToggleColors: () -> Unit,
     onToggleExport: () -> Unit,
+    onToggleScreen: () -> Unit,
     onResetTrim: () -> Unit,
     onTrimStart: () -> Unit,
     onTrimEnd: () -> Unit,
@@ -8294,7 +9393,7 @@ private fun MoreBottomTrayContent(
     onPrecisionStepChange: (Float) -> Unit,
     onNudgePrecision: (Float, Float) -> Unit,
     onConfirmPrecisionTarget: () -> Unit,
-    onForceLandscapeModeChange: (Boolean) -> Unit,
+    onScreenOrientationModeChange: (ScreenOrientationMode) -> Unit,
     onToggleTrackCountMode: () -> Unit,
     onShowTimelineChange: (Boolean) -> Unit,
     onShowAnalysisGuidesChange: (Boolean) -> Unit,
@@ -8313,11 +9412,12 @@ private fun MoreBottomTrayContent(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            BottomDeckButton("MAG", selected = moreTrayPanel == MoreTrayPanel.MAG, accent = LabAccent) { onToggleMag() }
-            BottomDeckButton("VIEW", selected = moreTrayPanel == MoreTrayPanel.VIEW, accent = LabGold) { onToggleView() }
-            BottomDeckButton("CLR", selected = moreTrayPanel == MoreTrayPanel.COLORS, accent = LabAccent) { onToggleColors() }
-            BottomDeckButton("OUT", selected = moreTrayPanel == MoreTrayPanel.EXPORT, accent = LabSuccess) { onToggleExport() }
-            BottomDeckButton("CUT", selected = moreTrayPanel == MoreTrayPanel.EDIT, accent = LabDanger) { onToggleEdit() }
+            BottomDeckButton("PRECISION", selected = moreTrayPanel == MoreTrayPanel.MAG, accent = LabAccent) { onToggleMag() }
+            BottomDeckButton("TRACKS & VIEW", selected = moreTrayPanel == MoreTrayPanel.VIEW, accent = LabGold) { onToggleView() }
+            BottomDeckButton("COLOURS", selected = moreTrayPanel == MoreTrayPanel.COLORS, accent = LabAccent) { onToggleColors() }
+            BottomDeckButton("EXPORT", selected = moreTrayPanel == MoreTrayPanel.EXPORT, accent = LabSuccess) { onToggleExport() }
+            BottomDeckButton("SCREEN", selected = moreTrayPanel == MoreTrayPanel.SCREEN, accent = LabGold) { onToggleScreen() }
+            BottomDeckButton("TRIM", selected = moreTrayPanel == MoreTrayPanel.EDIT, accent = LabDanger) { onToggleEdit() }
         }
         when (moreTrayPanel) {
             MoreTrayPanel.EDIT -> {
@@ -8347,6 +9447,11 @@ private fun MoreBottomTrayContent(
                             style = MaterialTheme.typography.labelSmall,
                             fontFamily = FontFamily.Monospace
                         )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        BottomDeckButton("TRIM START", accent = LabGold) { onTrimStart() }
+                        BottomDeckButton("TRIM END", accent = LabGold) { onTrimEnd() }
+                        BottomDeckButton("RESET TRIM", accent = LabSurfaceStrong) { onResetTrim() }
                     }
                     Surface(
                         color = PhysicsColorSurface.copy(alpha = 0.96f),
@@ -8473,44 +9578,67 @@ private fun MoreBottomTrayContent(
                 }
             }
             MoreTrayPanel.VIEW -> {
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    BottomDeckButton(if (twoTrackMode) "TWO TRACKS" else "SINGLE TRACK", selected = twoTrackMode, accent = LabAccent) {
-                        onToggleTrackCountMode()
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("TRACKING SETUP", color = PhysicsColorOnSurface, style = MaterialTheme.typography.labelMedium, fontFamily = FontFamily.Monospace)
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        listOf("A" to overlayColorFromArgb(trackAColorArgb), "B" to overlayColorFromArgb(trackBColorArgb)).forEach { (track, colour) ->
+                            Canvas(modifier = Modifier.width(78.dp).height(20.dp)) {
+                                drawLine(colour, Offset(4.dp.toPx(), size.height / 2f), Offset(size.width - 4.dp.toPx(), size.height / 2f), 3.dp.toPx())
+                                drawCircle(colour, 6.dp.toPx(), Offset(size.width / 2f, size.height / 2f))
+                            }
+                            Text("Track $track", color = colour, style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
+                        }
                     }
-                    BottomDeckButton(if (showTimeline) "TIMELINE BAR" else "TIMELINE HIDDEN", selected = showTimeline, accent = LabAccent) {
-                        onShowTimelineChange(!showTimeline)
-                    }
-                    BottomDeckButton(if (showAnalysisGuides) "ANALYSIS LINES" else "LINES OFF", selected = showAnalysisGuides, accent = LabGold) {
-                        onShowAnalysisGuidesChange(!showAnalysisGuides)
-                    }
-                    BottomDeckButton(
-                        if (forceLandscapeMode) "LANDSCAPE LOCK" else "SYSTEM ROTATE",
-                        selected = forceLandscapeMode,
-                        accent = LabSuccess
-                    ) {
-                        onForceLandscapeModeChange(!forceLandscapeMode)
-                    }
-                    PointHistoryMode.values().forEach { mode ->
-                        BottomDeckButton(
-                            when (mode) {
-                                PointHistoryMode.FADE -> "FADE"
-                                PointHistoryMode.ALL -> "ALL"
-                                PointHistoryMode.CURRENT -> "CURRENT"
-                            },
-                            selected = pointHistoryMode == mode,
-                            accent = LabSurfaceStrong
-                        ) {
-                            onPointHistoryModeChange(mode)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        BottomDeckButton("1 OBJECT (TRACK A)", selected = !twoTrackMode, accent = overlayColorFromArgb(trackAColorArgb)) {
+                            if (twoTrackMode) onToggleTrackCountMode()
+                        }
+                        BottomDeckButton("2 OBJECTS (A + B)", selected = twoTrackMode, accent = overlayColorFromArgb(trackBColorArgb)) {
+                            if (!twoTrackMode) onToggleTrackCountMode()
                         }
                     }
                 }
             }
+            MoreTrayPanel.SCREEN -> {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "SCREEN ORIENTATION",
+                        color = PhysicsColorOnSurface,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        BottomDeckButton(
+                            "LANDSCAPE",
+                            selected = screenOrientationMode == ScreenOrientationMode.LANDSCAPE,
+                            accent = LabSuccess
+                        ) { onScreenOrientationModeChange(ScreenOrientationMode.LANDSCAPE) }
+                        BottomDeckButton(
+                            "PORTRAIT",
+                            selected = screenOrientationMode == ScreenOrientationMode.PORTRAIT,
+                            accent = LabAccent
+                        ) { onScreenOrientationModeChange(ScreenOrientationMode.PORTRAIT) }
+                        BottomDeckButton(
+                            "AUTO ROTATE",
+                            selected = screenOrientationMode == ScreenOrientationMode.SYSTEM,
+                            accent = LabGold
+                        ) { onScreenOrientationModeChange(ScreenOrientationMode.SYSTEM) }
+                    }
+                    Text(
+                        "Landscape and Portrait lock the workspace. Auto Rotate follows the device setting.",
+                        color = PhysicsColorOnSurface.copy(alpha = 0.68f),
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+            }
             MoreTrayPanel.COLORS -> {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ColourTargetIndicator(activeOverlayRole, trackAColorArgb, trackBColorArgb, manualSelectorColorArgb, vectorColorArgb, calibrationColorArgb)
+                    Text("1. Choose what you want to colour.  2. Choose a colour below.", color = PhysicsColorOnSurface.copy(alpha = 0.75f), style = MaterialTheme.typography.labelSmall)
                     Row(
                         modifier = Modifier.horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -8520,11 +9648,11 @@ private fun MoreBottomTrayContent(
                             val color = roleColor(role, trackAColorArgb, trackBColorArgb, manualSelectorColorArgb, vectorColorArgb, calibrationColorArgb)
                             BottomDeckButton(
                                 label = when (role) {
-                                    OverlayColorRole.TRACK_A -> "TRACK A"
-                                    OverlayColorRole.TRACK_B -> "TRACK B"
-                                    OverlayColorRole.MANUAL_SELECTOR -> "SELECTOR"
-                                    OverlayColorRole.VECTOR -> "VECTOR"
-                                    OverlayColorRole.CALIBRATION -> "CAL"
+                                    OverlayColorRole.TRACK_A -> "TRACK A / OBJECT 1"
+                                    OverlayColorRole.TRACK_B -> "TRACK B / OBJECT 2"
+                                    OverlayColorRole.MANUAL_SELECTOR -> "PICK MARKER"
+                                    OverlayColorRole.VECTOR -> "MOTION PATH"
+                                    OverlayColorRole.CALIBRATION -> "CALIBRATION SCALE"
                                 },
                                 selected = activeOverlayRole == role,
                                 accent = color
@@ -8721,6 +9849,8 @@ private fun PrecisionInstrumentPanel(
     title: String,
     trackColor: Color,
     magnifierBitmap: Bitmap?,
+    magnifierRadiusPx: Int,
+    sampledCenterArgb: Int?,
     targetPosition: Offset?,
     targetLabel: String,
     stepPx: Float,
@@ -8769,6 +9899,15 @@ private fun PrecisionInstrumentPanel(
                         val gap = 4.dp.toPx()
                         val arm = 17.dp.toPx()
                         val stroke = 1.dp.toPx()
+                        val selectedPixelSize = minOf(size.width, size.height) /
+                            (magnifierRadiusPx * 2 + 1).coerceAtLeast(1)
+                        // The outlined square is the exact source pixel under the crosshair.
+                        drawRect(
+                            color = trackColor,
+                            topLeft = center - Offset(selectedPixelSize / 2f, selectedPixelSize / 2f),
+                            size = Size(selectedPixelSize, selectedPixelSize),
+                            style = Stroke(stroke)
+                        )
                         drawCircle(trackColor, 9.dp.toPx(), center, style = Stroke(stroke))
                         drawLine(trackColor, center - Offset(arm, 0f), center - Offset(gap, 0f), stroke)
                         drawLine(trackColor, center + Offset(gap, 0f), center + Offset(arm, 0f), stroke)
@@ -8806,6 +9945,15 @@ private fun PrecisionInstrumentPanel(
                     fontFamily = FontFamily.Monospace,
                     maxLines = 1
                 )
+                sampledCenterArgb?.let { argb ->
+                    Text(
+                        "RGB ${android.graphics.Color.red(argb)}  ${android.graphics.Color.green(argb)}  ${android.graphics.Color.blue(argb)}",
+                        color = PhysicsColorOnSurface.copy(alpha = 0.68f),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1
+                    )
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
                     listOf(1f, 2f, 5f).forEach { step ->
                         TextButton(
@@ -10117,11 +11265,9 @@ private fun FloatingGraphPanel(
         modifier = modifier.then(
             when {
                 graphFullScreen -> Modifier.fillMaxSize()
-                isLandscape -> Modifier.fillMaxSize()
+                // The caller owns the live graph's window bounds.  Applying fillMaxSize here
+                // used to override its top-area/floating dimensions and cover the video.
                 else -> Modifier
-                    .fillMaxWidth()
-                    .widthIn(max = 920.dp)
-                    .heightIn(min = 300.dp, max = 680.dp)
             }
         )
     ) {
@@ -13319,10 +14465,20 @@ private fun GraphCanvasWidget(
 
                 // Synced Hover Crosshair and Dot on all plots
                 if (measurementCursorEnabled || forceShowCoordinates) selectedSample?.let { sample ->
-                    val closest = points.minByOrNull { kotlin.math.abs(it.xValue - sample.xValue) }
-                    if (closest != null && closest.xValue in visibleStartTime..visibleEndTime && closest.value in visibleMinValue..visibleMaxValue) {
-                        val sampleX = xToScreen(closest.xValue)
-                        val sampleY = yToScreen(closest.value)
+                    // Never infer the guide point from the nearest X coordinate.  That is
+                    // ambiguous for plots such as X vs Vx, where X can repeat or reverse.
+                    // Resolve the very same plotted observation that owns the selected index.
+                    val plottedSample = when {
+                        isPrimary -> pointsToDraw.firstOrNull {
+                            it.timestampUs == sample.timestampUs && it.frameNumber == sample.frameNumber
+                        } ?: pointsToDraw.getOrNull(selectedSampleIndex)
+                        else -> pointsToDraw.firstOrNull {
+                            it.timestampUs == sample.timestampUs && it.frameNumber == sample.frameNumber
+                        }
+                    }
+                    if (plottedSample != null && plottedSample.xValue in visibleStartTime..visibleEndTime && plottedSample.value in visibleMinValue..visibleMaxValue) {
+                        val sampleX = xToScreen(plottedSample.xValue)
+                        val sampleY = yToScreen(plottedSample.value)
                         
                         // Vertical line
                         drawLine(
@@ -13372,14 +14528,14 @@ private fun GraphCanvasWidget(
                                 }
                                 valuePaint.color = android.graphics.Color.WHITE
                                 canvas.nativeCanvas.drawText(
-                                    "t: ${formatSeconds(closest.timestampUs)}s",
+                                    "t: ${formatSeconds(plottedSample.timestampUs)}s",
                                     labelX + 8.dp.toPx(),
                                     labelY + 17.dp.toPx(),
                                     valuePaint
                                 )
                                 if (showThreeLines) {
                                     val xLabel = graphSeriesLabel(selectedSeriesX, displayedUnit).split(" ")[0]
-                                    val xValStr = formatCalibratedValue(closest.xValue.toDouble())
+                                    val xValStr = formatCalibratedValue(plottedSample.xValue.toDouble())
                                     canvas.nativeCanvas.drawText(
                                         "$xLabel: $xValStr",
                                         labelX + 8.dp.toPx(),
@@ -13387,7 +14543,7 @@ private fun GraphCanvasWidget(
                                         valuePaint
                                     )
                                     val yLabel = graphSeriesLabel(selectedSeries, displayedUnit).split(" ")[0]
-                                    val yValStr = formatCalibratedValue(closest.value.toDouble())
+                                    val yValStr = formatCalibratedValue(plottedSample.value.toDouble())
                                     canvas.nativeCanvas.drawText(
                                         "$yLabel: $yValStr",
                                         labelX + 8.dp.toPx(),
@@ -13396,7 +14552,7 @@ private fun GraphCanvasWidget(
                                     )
                                 } else {
                                     val yLabel = graphSeriesLabel(selectedSeries, displayedUnit).split(" ")[0]
-                                    val yValStr = formatCalibratedValue(closest.value.toDouble())
+                                    val yValStr = formatCalibratedValue(plottedSample.value.toDouble())
                                     canvas.nativeCanvas.drawText(
                                         "$yLabel: $yValStr",
                                         labelX + 8.dp.toPx(),
