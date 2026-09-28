@@ -3,8 +3,29 @@ package com.physicstracker.app.tracking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import androidx.compose.ui.geometry.Offset
 
 class TrackingIntegrityGateTest {
+    // Hybrid scorer tests cover deterministic motion/context fusion.
+
+    @Test
+    fun hybridScorerPrefersStrongCandidateNearPrediction() {
+        val chosen = HybridCandidateScorer.choose(
+            listOf(
+                HybridTrackingCandidate("weak-near", Offset(101f, 100f), confidence = 0.78),
+                HybridTrackingCandidate("strong-far", Offset(140f, 100f), confidence = 0.80)
+            ),
+            predictedCenter = Offset(100f, 100f),
+            searchRadiusPx = 64.0
+        )
+        assertEquals("weak-near", chosen?.source)
+    }
+
+
+    @Test
+    fun hybridScorerReturnsNullForNoCandidates() {
+        assertEquals(null, HybridCandidateScorer.choose(emptyList(), Offset.Zero, 32.0))
+    }
     @Test
     fun precisePausesOnAmbiguousDistractor() {
         val assessment = TrackingIntegrityGate(TrackingQuality.PRECISE).assess(

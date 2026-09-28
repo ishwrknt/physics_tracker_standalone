@@ -1,0 +1,545 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 7,
+    "identityHash": "4fa396b052fa9d95749da54cf1f06893",
+    "entities": [
+      {
+        "tableName": "projects",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `videoUri` TEXT NOT NULL, `videoWidth` INTEGER NOT NULL, `videoHeight` INTEGER NOT NULL, `trimStartMs` INTEGER NOT NULL, `trimEndMs` INTEGER, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "videoUri",
+            "columnName": "videoUri",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "videoWidth",
+            "columnName": "videoWidth",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "videoHeight",
+            "columnName": "videoHeight",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "trimStartMs",
+            "columnName": "trimStartMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "trimEndMs",
+            "columnName": "trimEndMs",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "calibration",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`projectId` INTEGER NOT NULL, `stickP1x` REAL NOT NULL, `stickP1y` REAL NOT NULL, `stickP2x` REAL NOT NULL, `stickP2y` REAL NOT NULL, `knownDistanceMeters` REAL NOT NULL, `calibrationUnit` TEXT NOT NULL, `originX` REAL NOT NULL, `originY` REAL NOT NULL, `rotationDegrees` REAL NOT NULL, `coordinateSpace` TEXT NOT NULL, `sourceWidth` INTEGER, `sourceHeight` INTEGER, PRIMARY KEY(`projectId`), FOREIGN KEY(`projectId`) REFERENCES `projects`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "projectId",
+            "columnName": "projectId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "stickP1x",
+            "columnName": "stickP1x",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "stickP1y",
+            "columnName": "stickP1y",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "stickP2x",
+            "columnName": "stickP2x",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "stickP2y",
+            "columnName": "stickP2y",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "knownDistanceMeters",
+            "columnName": "knownDistanceMeters",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "calibrationUnit",
+            "columnName": "calibrationUnit",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "originX",
+            "columnName": "originX",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "originY",
+            "columnName": "originY",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "rotationDegrees",
+            "columnName": "rotationDegrees",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "coordinateSpace",
+            "columnName": "coordinateSpace",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceWidth",
+            "columnName": "sourceWidth",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "sourceHeight",
+            "columnName": "sourceHeight",
+            "affinity": "INTEGER",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "projectId"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": [
+          {
+            "table": "projects",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "projectId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "track_points",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `projectId` INTEGER NOT NULL, `frameNumber` INTEGER NOT NULL, `timestampUs` INTEGER NOT NULL, `trackLabel` TEXT NOT NULL, `pixelX` REAL NOT NULL, `pixelY` REAL NOT NULL, `massKg` REAL NOT NULL, `trackerId` TEXT NOT NULL, `requestedTimestampUs` INTEGER, `actualTimestampUs` INTEGER, `sourceWidth` INTEGER, `sourceHeight` INTEGER, `coordinateSpace` TEXT NOT NULL, `observationKind` TEXT NOT NULL, `sourceAlgorithm` TEXT NOT NULL, `confidence` REAL, `matchScore` REAL, `ambiguity` REAL, `residualErrorPx` REAL, `refinementMethod` TEXT, `recoveryStatus` TEXT, `isManualCorrection` INTEGER NOT NULL, `isProtectedKeyframe` INTEGER NOT NULL, FOREIGN KEY(`projectId`) REFERENCES `projects`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "projectId",
+            "columnName": "projectId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "frameNumber",
+            "columnName": "frameNumber",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timestampUs",
+            "columnName": "timestampUs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "trackLabel",
+            "columnName": "trackLabel",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pixelX",
+            "columnName": "pixelX",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pixelY",
+            "columnName": "pixelY",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "massKg",
+            "columnName": "massKg",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "trackerId",
+            "columnName": "trackerId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "requestedTimestampUs",
+            "columnName": "requestedTimestampUs",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "actualTimestampUs",
+            "columnName": "actualTimestampUs",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "sourceWidth",
+            "columnName": "sourceWidth",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "sourceHeight",
+            "columnName": "sourceHeight",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "coordinateSpace",
+            "columnName": "coordinateSpace",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "observationKind",
+            "columnName": "observationKind",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceAlgorithm",
+            "columnName": "sourceAlgorithm",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "confidence",
+            "columnName": "confidence",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "matchScore",
+            "columnName": "matchScore",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "ambiguity",
+            "columnName": "ambiguity",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "residualErrorPx",
+            "columnName": "residualErrorPx",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "refinementMethod",
+            "columnName": "refinementMethod",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "recoveryStatus",
+            "columnName": "recoveryStatus",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "isManualCorrection",
+            "columnName": "isManualCorrection",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isProtectedKeyframe",
+            "columnName": "isProtectedKeyframe",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_track_points_projectId_frameNumber_trackLabel",
+            "unique": true,
+            "columnNames": [
+              "projectId",
+              "frameNumber",
+              "trackLabel"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_track_points_projectId_frameNumber_trackLabel` ON `${TABLE_NAME}` (`projectId`, `frameNumber`, `trackLabel`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "projects",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "projectId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "trackers",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `projectId` INTEGER NOT NULL, `displayName` TEXT NOT NULL, `colorArgb` INTEGER NOT NULL, `displayOrder` INTEGER NOT NULL, `enabled` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`), FOREIGN KEY(`projectId`) REFERENCES `projects`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "projectId",
+            "columnName": "projectId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "displayName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "colorArgb",
+            "columnName": "colorArgb",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayOrder",
+            "columnName": "displayOrder",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "enabled",
+            "columnName": "enabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_trackers_projectId_displayOrder",
+            "unique": true,
+            "columnNames": [
+              "projectId",
+              "displayOrder"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_trackers_projectId_displayOrder` ON `${TABLE_NAME}` (`projectId`, `displayOrder`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "projects",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "projectId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "live_sessions",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `createdAtEpochMs` INTEGER NOT NULL, `durationUs` INTEGER NOT NULL, `sampleCount` INTEGER NOT NULL, `frameWidth` INTEGER NOT NULL, `frameHeight` INTEGER NOT NULL, `metersPerPixel` REAL, `stickPixelLength` REAL, `knownDistanceMeters` REAL, `calibrationUnit` TEXT, `physicsMode` TEXT NOT NULL, `trackerAlgorithm` TEXT NOT NULL, `samplesCsv` TEXT NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtEpochMs",
+            "columnName": "createdAtEpochMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "durationUs",
+            "columnName": "durationUs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sampleCount",
+            "columnName": "sampleCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "frameWidth",
+            "columnName": "frameWidth",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "frameHeight",
+            "columnName": "frameHeight",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "metersPerPixel",
+            "columnName": "metersPerPixel",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "stickPixelLength",
+            "columnName": "stickPixelLength",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "knownDistanceMeters",
+            "columnName": "knownDistanceMeters",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "calibrationUnit",
+            "columnName": "calibrationUnit",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "physicsMode",
+            "columnName": "physicsMode",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "trackerAlgorithm",
+            "columnName": "trackerAlgorithm",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "samplesCsv",
+            "columnName": "samplesCsv",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      }
+    ],
+    "views": [],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '4fa396b052fa9d95749da54cf1f06893')"
+    ]
+  }
+}

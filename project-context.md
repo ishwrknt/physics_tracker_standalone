@@ -1,164 +1,79 @@
-# PhysicsTracker Project Context
+# PhysicsTracker project context
 
-## Purpose
-`PhysicsTracker` is an Android physics video-analysis app. Users import an experiment video, calibrate the scene, track one or two objects, inspect tables and graphs, and export scientific results.
+Current checkpoint: **September 28, 2026**. This replaces older PhyZX/two-destination home guidance.
 
-## Product Priorities
-- Keep the video and tracking workflow fast, clear, and precise.
-- Preserve scientific correctness over decorative UI.
-- Treat calibration as the source of truth for all derived lengths, speeds, accelerations, separations, and momentum values.
-- Keep advanced controls available, but grouped so the main workflow stays clean.
+See [AGENTS.md](AGENTS.md), [CONTEXT_HANDOVER.md](CONTEXT_HANDOVER.md), and [[Knowledge-Vault/00-Home/Project Home|Project Home]].
 
-## Tech Stack
-- Kotlin Android app
-- Jetpack Compose UI
-- Media3 `PlayerView` for video playback
-- Room for projects, points, and calibration persistence
-- Hilt for DI
-- Classical tracking plus optional MediaPipe and deep-tracking paths
+## Purpose and priorities
 
-## Core App Structure
-- [MainActivity.kt](/media/ishwar/Both_Volume/Agent/bmad-project-scaffold-v2/PhysicsTracker/app/src/main/java/com/physicstracker/app/MainActivity.kt)
-  Entry flow, landing screen, project selection, and handoff into the experiment workspace.
-- [TrackingScreen.kt](/media/ishwar/Both_Volume/Agent/bmad-project-scaffold-v2/PhysicsTracker/app/src/main/java/com/physicstracker/app/ui/TrackingScreen.kt)
-  Main workspace for tracking, calibration, graphing, table/data views, exports, and analysis overlays.
-- [VideoPlayerViewModel.kt](/media/ishwar/Both_Volume/Agent/bmad-project-scaffold-v2/PhysicsTracker/app/src/main/java/com/physicstracker/app/ui/VideoPlayerViewModel.kt)
-  Playback state, persistence, tracked-point writes, project data, and analysis data.
-- [ExperimentExport.kt](/media/ishwar/Both_Volume/Agent/bmad-project-scaffold-v2/PhysicsTracker/app/src/main/java/com/physicstracker/app/ui/ExperimentExport.kt)
-  CSV/XLSX/PDF/report export paths.
-- [LightAnalysis.kt](/media/ishwar/Both_Volume/Agent/bmad-project-scaffold-v2/PhysicsTracker/app/src/main/java/com/physicstracker/app/ui/LightAnalysis.kt)
-  Light-intensity sampling UI, graph/table/compare helpers, and light export shaping.
-- [ClassicTrackerEngine.kt](/media/ishwar/Both_Volume/Agent/bmad-project-scaffold-v2/PhysicsTracker/app/src/main/java/com/physicstracker/app/tracking/ClassicTrackerEngine.kt)
-  Classical seed/template tracking implementation.
+Native Android/Kotlin/Compose application for physics video tracking and photo/video light-intensity analysis. Keep the experience simple, the media stage large, and scientific correctness ahead of decorative UI. The project began after difficulty using a laptop video-import/analysis workflow.
 
-## UI Structure Rules
-- The landing screen is simple and branded: title/logo plus two major destinations:
-  - `Experiments`
-  - `More`
-- The tracking workspace should keep:
-  - one thin top header
-  - a large primary video stage
-  - compact bottom controls
-  - graph/data panels below the header, never hidden behind it
-- Graphs must stay visible in graph mode. Extra controls expand downward, not over the graph.
-- Avoid debug-style clutter, repeated status text, or too many always-visible controls.
+Use the established **Research–Plan–Execute–Validate** cycle. Keep paper methodology separate from measured application results.
 
-## Workspace Rules
-- `TRACK` and `LIGHT` are separate analysis worlds.
-- `TRACK` owns motion tracking, kinematics graph/table/analysis, and tracking-specific export access.
-- `LIGHT` owns light geometry selection, intensity graph/table/compare, and light-specific export access.
-- `CAL` and `MORE` are shared utility areas, but they must not blur the mental model between `TRACK` and `LIGHT`.
-- The bottom navigation should stay minimal and large-tap friendly.
+## Current product
 
-## Tracking Rules
-- `A` and `B` are independent trackers.
-- Each track must preserve its own:
-  - selected points
-  - pending/manual point
-  - auto seed
-  - preview path
-  - saved tracked data
-- `A` data must never overwrite or merge into `B` data, and vice versa.
-- On-video trails, blinking/current points, labels, and vector-like preview paths must stay separated by `trackLabel`.
-- If a workflow choice exists between a flashy simultaneous mode and a correct sequential mode, prefer the correct mode.
+- Name/logo: PhysicsTracker and supplied `logonew.png`.
+- Home: Start (Motion, Light intensity, Live camera), Projects (saved work/filters), Learn (demos/resources).
+- Home card bodies open focused saved Motion or Light projects with Back to Start; their media buttons create new projects. Home content also swipes between tabs, and the focused list survives a workspace round trip. See [[ADR-010 Home cards separate new work from saved work]].
+- Motion: calibration, manual/automatic tracking, graphs, tables and scoped exports.
+- Light: photos/videos, directly draggable Point/Line/Box, brightness/R/G/B, lettered independent regions, profiles/time measurement, a live graph beside video playback, graph/table/compare, PDF/CSV/XLSX and saved history.
+- Light Data opens a full-window Graph/Table/Compare desk. Region selectors and explicit First/Second comparison choices replace verbose result text; Options keeps processing controls available. View video frame closes the results view and reveals the selected source frame.
+- Latest Light update: larger source handles and Motion-style pixel direction pad; fixed Point/Line/Box/Add Region and Start/Measure/Stop controls; 0.1×–4× video speed; Stop pauses measurement and video; multi-region colour comparison and a Stats/linear-fit tab. New regions inherit the active Point/Line/Box tool. Region labels extend beyond D with a protective 256-region cap. The tool tray stays visible during recording and the landscape divider resizes only by drag. See [[ADR-009 Scalable light regions and playback-paced results]].
+- Landscape Light layout matches the motion proportions: media left 68%, tools right 32%; tool panel can expand. Portrait bounds the bottom tray.
+- Shared controls do not imply shared measurement state or one monolithic composable. Motion retains its own workspace; Light uses `ExperimentWorkspaceFrame`.
+- 29 supplied demo media files plus a synthetic guided clip are bundled. Converted footage is labelled; publication rights remain to be confirmed.
 
-## Auto-Tracking Rules
-- Auto tracking must support independent seed selection and confirmation for `A` and `B`.
-- If both tracks are prepared, the app may run them sequentially from the same playback start position to preserve correctness.
-- Auto preview visuals must be labeled and separated by track.
-- Pixel picker drag must work in both:
-  - seed awaiting state
-  - selection/adjust state
-- Exact selection must preserve the visible selected point unless the user explicitly enables snapping behavior.
+## Architecture landmarks
 
-## Manual Tracking Rules
-- Manual tracking must support:
-  - place
-  - drag
-  - confirm
-  - advance by the selected frame step
-- Manual mode needs a way to avoid selecting old points from other frames when trajectories overlap or reverse.
-- The selected point and confirmation action must correspond to the actual visible selector position.
+All application Kotlin paths start at `app/src/main/java/com/physicstracker/app/`.
 
-## Graph and Data Rules
-- Graph/table data must respect track identity strictly.
-- `A`, `B`, and `BOTH` are comparison/view modes, not permission to merge underlying data.
-- The primary graph source must come from the selected track-specific data source, not a mixed table source.
-- Graph colors and legends must follow the same A/B color identity used in tracking overlays.
-- For track-specific motion series such as `x`, `y`, `speed`, `ax`, `ay`, and `accel`, the visible graph styling should follow the active track color.
-- Comparison overlays may show both tracks together, but the underlying identities remain separate.
+| Component | Responsibility |
+|---|---|
+| `MainActivity.kt` | Home/workspace navigation, demo routing, activity-scoped Light model |
+| `ui/ProjectLibraryScreen.kt` | Start/Projects/Learn |
+| `ui/TrackingScreen.kt` | Motion integration and shared button/panel controls |
+| `ui/ExperimentWorkspaceFrame.kt` | Light presentation shell and shared split constants |
+| `ui/VideoPlayerViewModel.kt` | Motion playback, project state, analysis |
+| `ui/light/LightAnalysisViewModel.kt` | Independent Light acquisition and persistence state |
+| `ui/light/LightAnalysisDesk.kt` | Full-window Light graph, table, comparison and options presentation |
+| `ui/light/LightStatistics.kt` | Derived descriptive intensity statistics and linear fit |
+| `ui/light/LightProjectStore.kt` | Versioned app-private Light snapshots/history |
+| `ui/light/LightMedia.kt` | Real photo/video pixel decoding and timing |
+| `data/` | Room schema 8; motion/live persistence |
+| `tracking/` | Classic/optional engines, timeline and integrity policy |
+| `live/` | Separate live camera pipeline |
 
-## Light Analysis Rules
-- `LIGHT` is a major top-level mode, not a secondary add-on.
-- `LIGHT` should start with a clean selection stage over the video/image.
-- Supported measurement geometry:
-  - `POINT`
-  - `LINE`
-  - `BOX`
-- Two-measurement mode is optional. `A/B` controls should only appear when enabled from `LIGHT > MORE`.
-- `LIGHT` needs dedicated sub-tabs:
-  - `SELECT`
-  - `GRAPH`
-  - `TABLE`
-  - `COMPARE`
-  - `MORE`
-- `LIGHT > GRAPH` and `LIGHT > TABLE` must support `A / B / BOTH`.
-- `TIME` light mode needs explicit user-controlled acquisition:
-  - `START`
-  - `STOP`
-  - `CLEAR`
-- Light measurements must come from real pixel sampling of the video frame, not overlay-only positions.
-- Light drag/geometry adjustments must remain correct under zoom/pan by using inverse-transformed overlay coordinates.
+See [[System Architecture]], [[Project Library]], [[Light Analysis]], [[Motion Tracking]], [[Live Tracking]], [[Calibration and Kinematics]] and [[Scientific Export]].
 
-## Calibration Rules
-- The main scale stick defines the calibration reference.
-- Any optional measurement stick uses the math derived from the main calibration stick and must not replace it.
-- All displayed physical values depend on calibration consistency, so calibration edits must not silently desync graph/data calculations.
+## Scientific invariants
 
-## Export Rules
-- Export must present experiment results as scientific output, not raw dumps.
-- PDF/report export should include the relevant graph/data context:
-  - graph series
-  - axis limits
-  - calibration context
-  - derived values
-  - track comparison context when applicable
-- Export scope should follow the active workspace and visible selection where practical.
-- Single-track export should include only that selected track.
-- Dual-track export should keep `A` and `B` separate unless the export is explicitly a comparison view.
-- Light export should include:
-  - selected light mode
-  - selected channel
-  - geometry summary
-  - graph data
-  - table data
-  - stats
+- Calibration governs physical units and derived quantities.
+- Source coordinates and actual timing/provenance stay authoritative.
+- Tracker A/B and Light regions stay independent; BOTH is presentation only.
+- Selector/magnifier share the selected coordinate. Do not substitute an object centroid for a selected point.
+- Keep raw data, derived processing, predictions and manual corrections distinguishable.
+- Light samples source pixels, not rendered overlays; brightness is not lux.
+- TRACK/LIGHT/LIVE remain distinct scientific workflows with consistent presentation.
 
-## Design Rules
-- Prefer a restrained dark lab-style palette.
-- Keep strong contrast for track points and selectors.
-- Use consistent A/B color identity across overlays, graphs, legends, and related data accents.
-- Reduce wasted spacing between stacked sub-tabs and control rows without making them hard to tap.
-- Prioritize portrait mobile usability first.
+## Persistence and boundaries
 
-## Engineering Rules
-- Work only in `PhysicsTracker` unless explicitly told otherwise.
-- Prefer modifying the existing architecture rather than layering duplicate UI.
-- Preserve working tracking, calibration, export, and graph flows unless the change intentionally improves them.
-- Use `TrackingScreen.kt` as the main integration point, but move reusable logic into helpers when the file becomes harder to reason about.
-- After meaningful changes, build the app and run it on the connected device.
+Motion/live use Room schema 8. Light uses app-private streaming snapshots, not Room. Settled edits and completed/partial results are saved; explicit Save and failure status are available. Source media must remain accessible for new measurement. Saved results survive a missing URI, but source relinking and portable Light project import/export remain planned. Clearing app data/uninstall removes projects.
 
-## Current High-Risk Areas
-- `TrackingScreen.kt` is the main complexity hotspot.
-- `TrackingScreen.kt` is large enough to hit Kotlin's `Method too large` bytecode limit if too many UI branches remain inline.
-- A/B separation can regress if graph, table, preview, or auto-run code falls back to shared sources.
-- Graph rendering and compare logic are sensitive to accidental mixed data sources.
-- Light workspace drag and export logic are sensitive to mismatches between visible selection state and exported scope.
-- KSP/Hilt generated output can occasionally require clearing stale build output before a successful rebuild.
+Original Classic fallback remains intact. Debug-only BLUR TEST is experimental; independent real-video benchmark improvement is unproven. Do not treat earlier confidence-proxy scoring as independent appearance/shape evidence.
 
-## Immediate Implementation Guidance
-- Favor scientific correctness over pseudo-simultaneous behavior.
-- Keep A/B workflows explicit and separate.
-- Keep the video stage primary.
-- Keep graph/data visible and readable.
-- When in doubt, make the state model clearer before adding more UI controls.
+## Verification and deployment
+
+- Current debug package: `com.physicstracker.test` (PhysicsTracker Test).
+- Release package: `com.physicstracker`; namespace `com.physicstracker.app`.
+- Configured version: 1.0.2/code 3; SDK min 24, compile/target 36.
+- Latest build: Light mixed-region and fixed Start/Stop debug APK and Android test APK compiled; 101 JVM tests passed; lint passed with zero errors and 106 warnings.
+- Latest install: the September 29 Light mixed-region and fixed Start/Stop debug APK installed successfully on MT2111 as `com.physicstracker.test` using `adb install -r`.
+- Latest launch/UI acceptance: **not run**, at the user's explicit install-only request.
+- Latest lint: zero errors, 104 warnings.
+- No new release bundle/push/publication for the latest changes.
+
+Do not automatically open the app or run device UI tests until requested. Do not uninstall the Play app to bypass signing. Debug/release histories are independent.
+
+## Next work, only when requested
+
+Collect user feedback and verify home navigation, portrait/landscape tools, selection/magnifier mapping, video timing, save/reopen and real shared files on-device. Keep [[Development Plan]] and [[Gap Analysis]] current. No claim of complete workflow acceptance or publish readiness is warranted yet.

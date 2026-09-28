@@ -23,6 +23,9 @@ enum class ClassicTrackerMode {
     ACCURATE
 }
 
+/** Explicit comparison paths. Keep the existing default for shared LIVE callers. */
+enum class ClassicCandidatePolicy { ORIGINAL_BASELINE, INITIAL_HYBRID }
+
 data class ClassicTrackingSeed(
     val template: Bitmap,
     val center: Offset,
@@ -56,7 +59,8 @@ class ClassicTrackerEngine(
     private val mode: ClassicTrackerMode,
     quality: TrackingQuality = if (mode == ClassicTrackerMode.FAST) TrackingQuality.QUICK else TrackingQuality.SMART,
     private val targetProfile: TargetProfile = TargetProfile.OBJECT,
-    recoveryPolicy: RecoveryPolicy = quality.defaultRecoveryPolicy()
+    recoveryPolicy: RecoveryPolicy = quality.defaultRecoveryPolicy(),
+    private val candidatePolicy: ClassicCandidatePolicy = ClassicCandidatePolicy.INITIAL_HYBRID
 ) {
     private val integrityGate = TrackingIntegrityGate(quality, recoveryPolicy)
     private val profile = when (mode) {
@@ -141,15 +145,42 @@ class ClassicTrackerEngine(
             maxGeometryTemplateDivergencePx
         )
 
+        val hybridCandidates = buildList {
+            if (templateScore != null && match != null) add(
+                HybridTrackingCandidate(
+                    source = "template",
+                    center = match.center,
+                    confidence = templateConfidence,
+                    appearanceSimilarity = templateConfidence,
+                    shapeSimilarity = if (geometryMatch == null) templateConfidence else (1.0 - (geometryTemplateDistance / maxGeometryTemplateDivergencePx).coerceIn(0f, 1f).toDouble()),
+                    residualPixels = (match.center - predictedCenter).getDistance().toDouble()
+                )
+            )
+            if (geometryMatch != null && (templateScore == null || geometryCanAssist)) add(
+                HybridTrackingCandidate(
+                    source = "geometry",
+                    center = geometryMatch.center,
+                    confidence = geometryMatch.confidence,
+                    appearanceSimilarity = if (templateScore == null) geometryMatch.confidence else templateConfidence,
+                    shapeSimilarity = geometryMatch.confidence,
+                    residualPixels = (geometryMatch.center - predictedCenter).getDistance().toDouble()
+                )
+            )
+        }
+        val selectedHybridCandidate = HybridCandidateScorer.choose(
+            hybridCandidates, predictedCenter, effectiveSearchRadius.toDouble()
+        )
         val useGeometry = when {
             geometryMatch == null && templateScore == null -> return null
-            geometryMatch != null && templateScore == null -> true
-            geometryMatch == null -> false
-            !geometryCanAssist -> false
-            mode == ClassicTrackerMode.ACCURATE ->
-                geometryMatch.confidence >= 0.78 && geometryMatch.confidence >= templateConfidence + 0.12
-            else ->
-                geometryMatch.confidence >= 0.7 && geometryMatch.confidence >= templateConfidence + 0.1
+            candidatePolicy == ClassicCandidatePolicy.ORIGINAL_BASELINE -> when {
+                geometryMatch != null && templateScore == null -> true
+                geometryMatch == null || !geometryCanAssist -> false
+                mode == ClassicTrackerMode.ACCURATE ->
+                    geometryMatch.confidence >= 0.78 && geometryMatch.confidence >= templateConfidence + 0.12
+                else -> geometryMatch.confidence >= 0.7 && geometryMatch.confidence >= templateConfidence + 0.1
+            }
+            selectedHybridCandidate?.source == "geometry" -> true
+            else -> false
         }
 
         val acceptedCenter = when {

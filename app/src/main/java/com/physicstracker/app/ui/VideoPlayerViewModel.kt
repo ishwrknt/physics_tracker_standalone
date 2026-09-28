@@ -30,8 +30,13 @@ import javax.inject.Inject
 @HiltViewModel
 class VideoPlayerViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val repository: PhysicsRepository
+    private val repository: PhysicsRepository,
+    liveSessionDao: com.physicstracker.app.live.data.LiveSessionDao
 ) : ViewModel() {
+
+    /** Saved live-tracking sessions for the home HISTORY half. */
+    val liveSessions = liveSessionDao.getSessions()
+        .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val player: ExoPlayer = ExoPlayer.Builder(context).build().apply {
         setSeekParameters(androidx.media3.exoplayer.SeekParameters.EXACT)
@@ -566,6 +571,8 @@ class VideoPlayerViewModel @Inject constructor(
 
     data class ObservationWrite(
         val requestedPositionMs: Long,
+        /** Absolute video time when a caller has microsecond PTS; avoids millisecond truncation. */
+        val requestedVideoTimestampUs: Long? = null,
         val sourceX: Double,
         val sourceY: Double,
         val trackLabel: String = "A",
@@ -585,7 +592,8 @@ class VideoPlayerViewModel @Inject constructor(
     suspend fun addSourceObservationTracked(write: ObservationWrite) {
         val id = _projectId.value
         if (id == -1L) return
-        val requestedUs = (_trimStart.value + write.requestedPositionMs.coerceAtLeast(0L)) * 1000L
+        val requestedUs = write.requestedVideoTimestampUs?.coerceAtLeast(0L)
+            ?: ((_trimStart.value + write.requestedPositionMs.coerceAtLeast(0L)) * 1000L)
         val identity = _videoTimingInfo.value.nearestFrame(requestedUs)
         val point = TrackPointEntity(
             projectId = id,
@@ -612,9 +620,11 @@ class VideoPlayerViewModel @Inject constructor(
             isManualCorrection = write.manualCorrection,
             isProtectedKeyframe = write.protectedKeyframe
         )
-        val existing = trackPoints.value.firstOrNull {
+        val existing = repository.getPointsForProject(id).first().firstOrNull {
             it.frameNumber == identity.frameNumber && it.trackLabel == write.trackLabel
         }
+        // Automatic reruns must never erase a seed or a user correction, including the other track.
+        if (existing?.isProtectedKeyframe == true && write.kind != "MANUAL") return
         if (existing != null) {
             val updated = point.copy(id = existing.id)
             insertPointInternal(updated)

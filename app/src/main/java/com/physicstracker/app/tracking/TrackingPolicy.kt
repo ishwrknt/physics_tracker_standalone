@@ -1,6 +1,7 @@
 package com.physicstracker.app.tracking
 
 import kotlin.math.hypot
+import androidx.compose.ui.geometry.Offset
 
 enum class TargetProfile(val label: String, val defaultQuality: TrackingQuality) {
     MARKER("MARKER", TrackingQuality.QUICK),
@@ -26,12 +27,33 @@ data class TrackingDiagnostics(
     val searchRadiusPixels: Double
 )
 
+
 data class TrackingAssessment(
     val confidence: Double,
     val decision: TrackingDecision,
     val reasons: Set<String>
 )
 
+
+// A candidate position proposed by one independent tracking cue.
+data class HybridTrackingCandidate(
+    val source: String,
+    val center: Offset,
+    val confidence: Double,
+    val appearanceSimilarity: Double = confidence,
+    val shapeSimilarity: Double = confidence,
+    val residualPixels: Double = 0.0
+)
+
+
+// Deterministic fusion of motion, appearance, and shape/context evidence.
+object HybridCandidateScorer {
+    fun score(candidate: HybridTrackingCandidate, predictedCenter: Offset, searchRadiusPx: Double): Double {
+        val motion = (1.0 - ((candidate.center - predictedCenter).getDistance() / searchRadiusPx.coerceAtLeast(1.0))).coerceIn(0.0, 1.0)
+        return (candidate.confidence.coerceIn(0.0, 1.0) * 0.42 + candidate.appearanceSimilarity.coerceIn(0.0, 1.0) * 0.22 + candidate.shapeSimilarity.coerceIn(0.0, 1.0) * 0.16 + motion * 0.20).coerceIn(0.0, 1.0)
+    }
+    fun choose(candidates: List<HybridTrackingCandidate>, predictedCenter: Offset, searchRadiusPx: Double): HybridTrackingCandidate? = candidates.maxByOrNull { score(it, predictedCenter, searchRadiusPx) }
+}
 /**
  * Pure, deterministic scientific-integrity gate shared by every tracking engine.
  * Prediction is allowed to guide a search but this gate never labels prediction as measurement.

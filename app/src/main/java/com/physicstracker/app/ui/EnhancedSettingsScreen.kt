@@ -69,7 +69,7 @@ fun EnhancedSettingsScreen(
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "Customize your PhyZX experience",
+                    text = "Customize your PhysicsTracker experience",
                     color = Color.White.copy(alpha = 0.7f),
                     fontSize = 14.sp
                 )
@@ -212,7 +212,7 @@ fun EnhancedSettingsScreen(
             
             SettingsActionItem(
                 title = "Help & Support",
-                description = "Get help with PhyZX",
+                description = "Get help with PhysicsTracker",
                 icon = Icons.Filled.Help,
                 onClick = {
                     // TODO: Implement help/support

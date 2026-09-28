@@ -36,14 +36,18 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.physicstracker.app.data.ProjectEntity
+import com.physicstracker.app.live.ui.LiveTrackingScreen
 import com.physicstracker.app.ui.PhysicsColorError
 import com.physicstracker.app.ui.PhysicsTrackerWorkspaceTheme
 import com.physicstracker.app.ui.ProjectLibraryScreen
 import com.physicstracker.app.ui.TrackingScreen
+import com.physicstracker.app.ui.light.LightAnalysisScreen
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.launch
 
 @AndroidEntryPoint
 @androidx.media3.common.util.UnstableApi
+@androidx.annotation.OptIn(androidx.camera.camera2.interop.ExperimentalCamera2Interop::class)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -69,11 +73,23 @@ class MainActivity : ComponentActivity() {
             val viewModel: com.physicstracker.app.ui.VideoPlayerViewModel =
                 androidx.hilt.navigation.compose.hiltViewModel()
             val projects by viewModel.projects.collectAsState()
+            val liveSessions by viewModel.liveSessions.collectAsState()
+            val lightModel: com.physicstracker.app.ui.light.LightAnalysisViewModel = androidx.lifecycle.viewmodel.compose.viewModel()
+            val lightProjects by lightModel.history.collectAsState()
+            val lightHistoryError by lightModel.historyError.collectAsState()
             var selectedVideoUri by rememberSaveable { mutableStateOf<String?>(null) }
             var activeProjectName by rememberSaveable { mutableStateOf<String?>(null) }
             var projectNameDraft by rememberSaveable { mutableStateOf("") }
             var showNewProjectDialog by rememberSaveable { mutableStateOf(false) }
             var activeProject by rememberSaveable { mutableStateOf(false) }
+            var liveMode by rememberSaveable { mutableStateOf(false) }
+            var lightMode by rememberSaveable { mutableStateOf(false) }
+            var openCalibration by rememberSaveable { mutableStateOf(false) }
+            var showDemos by rememberSaveable { mutableStateOf(false) }
+            var demoBusy by remember { mutableStateOf(false) }
+            var demoError by remember { mutableStateOf<String?>(null) }
+            val demoScope = androidx.compose.runtime.rememberCoroutineScope()
+            val workspaceUiState = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
             var projectForActions by remember { mutableStateOf<ProjectEntity?>(null) }
             var renameDraft by rememberSaveable { mutableStateOf("") }
             var confirmDelete by rememberSaveable { mutableStateOf(false) }
@@ -99,12 +115,44 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            val pickLightMedia = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                if (uri != null) {
+                    runCatching { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+                    val type = contentResolver.getType(uri).orEmpty()
+                    val extension = uri.toString().substringBefore('?').substringAfterLast('.', "").lowercase()
+                    val video = type.startsWith("video/") || (!type.startsWith("image/") &&
+                        extension in setOf("mp4", "mov", "m4v", "mkv", "webm", "avi"))
+                    lightModel.open(uri, video)
+                    lightMode = true
+                }
+            }
+
             PhysicsTrackerWorkspaceTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    if (activeProject) {
+                    if (lightMode) {
+                        workspaceUiState.SaveableStateProvider("light-workspace") {
+                        LightAnalysisScreen(onBack = { lightMode = false },
+                            model = lightModel,
+                            initialVideoUri = selectedVideoUri.takeIf { activeProject },
+                            returnToTracking = activeProject,
+                            onOpenMotion = { uri, name, calibration ->
+                                selectedVideoUri = uri; activeProjectName = name
+                                openCalibration = calibration; activeProject = true; lightMode = false
+                            },
+                            onOpenHistory = {
+                                lightMode = false; activeProject = false; activeProjectName = null
+                                selectedVideoUri = null; openCalibration = false; lightModel.refreshHistory()
+                            })
+                        }
+                    } else if (liveMode) {
+                        LiveTrackingScreen(
+                            onBack = { liveMode = false }
+                        )
+                    } else if (activeProject) {
+                        workspaceUiState.SaveableStateProvider("tracking-${selectedVideoUri.orEmpty()}") {
                         TrackingScreen(
                             videoUri = selectedVideoUri.orEmpty(),
                             projectName = activeProjectName.orEmpty(),
@@ -114,34 +162,75 @@ class MainActivity : ComponentActivity() {
                                 selectedVideoUri = null
                                 projectNameDraft = ""
                             },
-                            viewModel = viewModel
+                            viewModel = viewModel,
+                            onOpenLight = { openCalibration = false; lightMode = true },
+                            startInCalibration = openCalibration
                         )
+                        }
                     } else {
-                        ProjectLibraryScreen(
-                            projects = projects,
-                            appVersion = appVersion,
-                            onNewExperiment = {
-                                pickVideo.launch(
-                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
-                                )
-                            },
-                            onOpenProject = { project ->
-                                viewModel.loadProject(project)
-                                activeProjectName = project.name
-                                selectedVideoUri = project.videoUri
-                                activeProject = true
-                            },
-                            onProjectActions = { project ->
-                                projectForActions = project
-                                renameDraft = project.name
-                            },
-                            onOpenLearning = { url ->
-                                runCatching {
-                                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                                }
-                            }
-                        )
+                        workspaceUiState.SaveableStateProvider("project-library") {
+                            ProjectLibraryScreen(
+                                projects = projects,
+                                liveSessions = liveSessions,
+                                appVersion = appVersion,
+                                onNewExperiment = {
+                                    pickVideo.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+                                    )
+                                },
+                                onOpenProject = { project ->
+                                    openCalibration = false
+                                    viewModel.loadProject(project)
+                                    activeProjectName = project.name
+                                    selectedVideoUri = project.videoUri
+                                    activeProject = true
+                                },
+                                onProjectActions = { project ->
+                                    projectForActions = project
+                                    renameDraft = project.name
+                                },
+                                onOpenLearning = { url ->
+                                    runCatching {
+                                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                                    }
+                                },
+                                onOpenLive = { liveMode = true },
+                                onOpenLight = { pickLightMedia.launch(arrayOf("image/*", "video/*")) },
+                                lightProjects = lightProjects,
+                                lightHistoryError = lightHistoryError,
+                                onOpenLightProject = { id -> lightModel.reopen(id); lightMode = true },
+                                onOpenLightDemo = { demoError = null; showDemos = true }
+                            )
+                        }
                     }
+                }
+
+                if (showDemos) {
+                    com.physicstracker.app.ui.DemoPicker(demoBusy, demoError,
+                        onClose = { showDemos = false }, onChoose = { demo ->
+                            demoBusy = true
+                            demoError = null
+                            demoScope.launch {
+                                try {
+                                    val uri = com.physicstracker.app.ui.prepareDemo(this@MainActivity, demo)
+                                    openCalibration = false
+                                    if (demo.light) {
+                                        activeProject = false
+                                        selectedVideoUri = null
+                                        lightModel.open(uri, demo.video, demo = demo.guided, displayName = demo.projectName)
+                                        lightMode = true
+                                    } else {
+                                        selectedVideoUri = uri.toString()
+                                        activeProjectName = demo.projectName
+                                        activeProject = true
+                                        lightMode = false
+                                    }
+                                    showDemos = false
+                                } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                                catch (error: Exception) { demoError = "Could not open demo: ${error.message}" }
+                                finally { demoBusy = false }
+                            }
+                        })
                 }
 
                 if (showNewProjectDialog) {

@@ -1,0 +1,29 @@
+# Research Evidence Audit
+
+**Status:** Completed source review and offline benchmark reproduction; absolute experimental and Android acquisition validation remain **Planned**.
+
+The latest reconstructed research paper is at `mainPaper/reconstructed_20260911/manuscript.pdf`, with editable LaTeX/Word, numerical figure data, a reproducible build, and a detailed scientific audit alongside it. The earlier `tools/paper_reconstruction/` delivery remains available as history. The author-directed paper presents [[Research Development Methodology]] through Research–Plan–Execute–Validate, with PhysicsTracker and its working sequence as the primary results. [[Motion Tracking]], [[Calibration and Kinematics]], screenshots, exported records, and numerical verification support that account. Detailed numerical methods are retained in supplementary material. The latest inspection and verification ran on 11–12 September 2026.
+
+## Verified results and boundaries
+
+- Both Python benchmark programs were rerun. Saved non-timing metrics reproduce. The recorded clip gives 88.769 px baseline mean discrepancy versus 2.343 px candidate discrepancy, with 190 versus 186 measurements and 90 versus zero errors above 35 px. The colour-derived reference shares a component detector with candidate recovery, so this is not independent absolute accuracy.
+- Fifteen synthetic names represent thirteen distinct input sequences. The candidate loses substantial coverage during discontinuity, growth and crossings. The growth test does not exercise rotation; the generated irregular-time list is not used by the tracker; camera-motion scoring does not establish laboratory-frame compensation.
+- Current [[Calibration and Kinematics]] uses per-track, per-contiguous-frame-segment centred differences and optional triangular position averaging. Raw observations remain separate. Sparse intentional frame steps split derivative segments in the current routine.
+- Indexed selected PTS is not a decoder-returned bitmap timestamp. Requested-minus-selected timing must not be represented as camera jitter. See [[ADR-002 Source coordinates and timing provenance]].
+- The six-source pendulum CSV is absent. Existing CSV/video/desktop-file frame counts and dimensions cannot be reconciled from the supplied records. Periodic record fits are reproducible; an independent gravity result and phone–desktop validation are not established.
+- The class named `NativeTemplateTracker` is implemented in Kotlin in this checkout. Its name and compatibility flag do not establish a linked C tracker. Optional native OpenCV support is a separate dependency.
+- After three concurrent tracking-source edits, the latest focused JVM run passed all 15 tests across `SourceCoordinateTransformTest`, `KinematicsIdentityTest`, `VideoTimingInfoTest`, and `TrackingIntegrityGateTest`, with no failures or skips. This supersedes the earlier reconstruction's dependency/disk-space failure. The report is `mainPaper/reconstructed_20260911/analysis/jvm_tests.json`; it does not establish on-device acquisition accuracy.
+- The full-record pendulum fits were cross-checked against the original nonlinear fitting helper; both CSV periods agree within 3e-8 s. The three-record position/residual figure retains each record's own units and time axis. These are numerical checks, not experimental uncertainty estimates.
+- The earlier manuscript's four original app screenshots now illustrate [[Project Library]], [[Calibration and Kinematics]], and [[Motion Tracking]] in the paper. The `neee2` CSV matches all 160 rows of its historical PDF [[Scientific Export]] report, and its 3.293–6.209-s interval agrees with the graph screenshot. A new full-record fit gives T = 1.5636281 s and A = 0.1361223 m on the exported scales. Initial vertical-position transients and a frame gap require source-frame review before derivative interpretation. The documented 0.61-m calibration reference does not independently establish mechanical pendulum length; this example does not recover the missing six-source comparison or validate gravity.
+
+## Standalone manuscript package — 19 September 2026
+
+The author's `mainPaper/aman1.tex` has an independent editing snapshot at `mainPaper/aman1_overleaf/`, with an upload archive at `mainPaper/aman1_overleaf.zip`. It includes all nine referenced figures, two editable tables, the bibliography, local CAS template files, and template icons. Only figure/table paths were simplified; manuscript content and the original source are unchanged. A clean build in an isolated temporary directory with pdfLaTeX/BibTeX (TeX Live 2023) produced 13 pages without unresolved citations or references. Existing layout warnings remain. The companion `mainPaper/aman1_overleaf_preview.pdf` records the compiled output. This packaging verification adds no scientific validation to [[Research Development Methodology]] or [[Scientific Analysis]].
+
+## Planned evidence required
+
+Restore original matched pendulum exports/video identities and calibration, document physical geometry and uncertainties, add independent tracking annotations, and validate decoded-frame correspondence and calibrated observables on Android devices. These are validation tasks, not claims of implemented corrections.
+
+Related: [[Scientific Analysis]] · [[Scientific Export]] · [[Gap Analysis]] · [[Development Plan]] · [[System Architecture]]
+
+The main manuscript now uses PhysicsTracker consistently, records the author-reported laptop-import motivation and earlier PhyZX name, and reuses the original cycle diagram unchanged. Nine historical BMAD planning records were recovered from the workspace referenced by `project-context.md`; hashed snapshots accompany the paper. Planning targets are not presented as achieved validation. See [[Research Development Methodology]].

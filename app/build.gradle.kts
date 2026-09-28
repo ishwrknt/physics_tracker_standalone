@@ -55,6 +55,10 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Coexist with the Google Play-signed app without deleting its projects.
+            applicationIdSuffix = ".test"
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
@@ -137,6 +141,15 @@ dependencies {
     // Media3 (ExoPlayer)
     implementation("androidx.media3:media3-exoplayer:1.2.0")
     implementation("androidx.media3:media3-ui:1.2.0")
+
+    // OpenCV (KLT feature tracking for Live Tracking)
+    implementation("com.quickbirdstudios:opencv:4.5.3.0")
+
+    // CameraX (Live Tracking pipeline: hardware preview + frame analysis)
+    implementation("androidx.camera:camera-core:1.3.4")
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("androidx.camera:camera-view:1.3.4")
 
     // MediaPipe object detection
     implementation("com.google.mediapipe:tasks-vision:0.10.35")

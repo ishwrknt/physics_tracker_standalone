@@ -9,6 +9,7 @@ import com.physicstracker.app.data.CalibrationDao
 import com.physicstracker.app.data.ProjectDao
 import com.physicstracker.app.data.TrackPointDao
 import com.physicstracker.app.data.TrackerDao
+import com.physicstracker.app.live.data.LiveSessionDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -131,6 +132,37 @@ object DatabaseModule {
         }
     }
 
+    val MIGRATION_7_8 = object : Migration(7, 8) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE live_sessions ADD COLUMN metaJson TEXT NOT NULL DEFAULT '{}'")
+        }
+    }
+
+    val MIGRATION_6_7 = object : Migration(6, 7) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS live_sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                    name TEXT NOT NULL,
+                    createdAtEpochMs INTEGER NOT NULL,
+                    durationUs INTEGER NOT NULL,
+                    sampleCount INTEGER NOT NULL,
+                    frameWidth INTEGER NOT NULL,
+                    frameHeight INTEGER NOT NULL,
+                    metersPerPixel REAL,
+                    stickPixelLength REAL,
+                    knownDistanceMeters REAL,
+                    calibrationUnit TEXT,
+                    physicsMode TEXT NOT NULL,
+                    trackerAlgorithm TEXT NOT NULL,
+                    samplesCsv TEXT NOT NULL
+                )
+                """.trimIndent()
+            )
+        }
+    }
+
     @Provides
     @Singleton
     fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase {
@@ -144,6 +176,8 @@ object DatabaseModule {
             .addMigrations(MIGRATION_3_4)
             .addMigrations(MIGRATION_4_5)
             .addMigrations(MIGRATION_5_6)
+            .addMigrations(MIGRATION_6_7)
+            .addMigrations(MIGRATION_7_8)
             .build()
     }
 
@@ -164,4 +198,7 @@ object DatabaseModule {
 
     @Provides
     fun provideTrackerDao(database: AppDatabase): TrackerDao = database.trackerDao()
+
+    @Provides
+    fun provideLiveSessionDao(database: AppDatabase): LiveSessionDao = database.liveSessionDao()
 }

@@ -1,0 +1,18 @@
+# Architecture Decision Log
+
+| ID | Decision | Status | Rationale | Consequence |
+|---|---|---|---|---|
+| [[ADR-001 Local-first Android architecture]] | Keep analysis on-device with Room persistence and Android media APIs | Accepted | Works with experiment videos without a backend and preserves local control | No cloud sync, remote collaboration, or server-side processing currently exists |
+| [[ADR-002 Source coordinates and timing provenance]] | Persist source-space coordinates and timing diagnostics | Accepted | Scientific values must not depend on transient view transforms or nominal FPS | All UI transforms and exporters must honour this metadata |
+| [[ADR-003 Independent tracker identity]] | A/B trajectories remain independently owned | Accepted | Comparison must not corrupt data provenance | Shared sources and implicit merging are prohibited |
+| [[ADR-004 Live tracking as an independent real-time module]] | Camera live tracking is a separate module, pipeline, and table; video workflow untouched | Accepted | Real-time cadence/timing differs from video; isolation protects the high-risk tracking surface | CameraX dependency; `live_sessions` table; `LiveTracker`/`LivePhysicsModule` extension contracts |
+| [[ADR-005 Robust live tracker and estimated scale]] | Fused template+color+Kalman tracker; optics-based scale estimate requires user confirmation | Accepted | Frame-index prediction fails on camera cadence; single-channel matching switches objects; absolute scale must not be fabricated | Tracker confined to live module; Camera2 interop read-only; manual stick calibration remains validated fallback |
+| [[ADR-006 Live runs become Experiments]] | Saved live runs convert into first-class experiments (projects/track_points); only two landing destinations: Live, Experiments | Accepted | One analysis engine for live and video data; CSV is export, not storage | `videoUri = ""` fails soft in the workspace; schema v8 `metaJson`; no bundled video/IMU yet |
+
+| [[ADR-007 Benchmark-gated blur-aware offline tracking]] | Separate debug-only blur-aware tracker; preserve Classic comparison paths | Accepted for experiment; promotion planned | Confidence proxies and Python benchmarks do not prove Android accuracy | Independent held-out/device validation required before default promotion |
+
+Add new ADR pages for a choice that changes a system boundary, persistent model, external dependency, or scientific-validity rule.
+
+| [[ADR-008 Shared workspace and persistent light projects]] | Shared workspace controls and persistent light snapshots/history | Implemented; device acceptance pending | Keep one app experience without merging measurement domains; avoid large Room cursor payloads | App-private versioned saves, recoverable replacement, shared history, source URI access required |
+| [[ADR-009 Scalable light regions and playback-paced results]] | Append independent Point/Line/Box Light regions; pace visible results to playback speed; derive intensity statistics | Implemented; device acceptance pending | Let users compare more locations and profile types while preserving source pixels, actual PTS and raw values | Practical 256-region cap, compatible snapshot reader, device synchronization checks pending |
+| [[ADR-010 Home cards separate new work from saved work]] | Card bodies open focused saved lists; explicit media buttons create projects; tabs also swipe | Implemented; device acceptance pending | Reduce ambiguity between new and saved work while retaining Start/Projects/Learn | Home state survives workspace return; Android document picker starts new Light work only after selection |

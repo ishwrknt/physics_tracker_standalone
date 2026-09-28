@@ -1,8 +1,10 @@
 package com.physicstracker.app.ui
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -19,8 +21,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -40,11 +45,14 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.physicstracker.app.data.ProjectEntity
+import androidx.activity.compose.BackHandler
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -76,78 +84,143 @@ private val learningResources = listOf(
 @Composable
 fun ProjectLibraryScreen(
     projects: List<ProjectEntity>,
+    liveSessions: List<com.physicstracker.app.live.data.LiveSessionEntity> = emptyList(),
     appVersion: String,
     onNewExperiment: () -> Unit,
     onOpenProject: (ProjectEntity) -> Unit,
     onProjectActions: (ProjectEntity) -> Unit,
-    onOpenLearning: (String) -> Unit
+    onOpenLearning: (String) -> Unit,
+    onOpenLive: (() -> Unit)? = null,
+    onOpenLiveSession: ((com.physicstracker.app.live.data.LiveSessionEntity) -> Unit)? = null,
+    onOpenLight: (() -> Unit)? = null,
+    lightProjects: List<com.physicstracker.app.ui.light.LightProjectSummary> = emptyList(),
+    lightHistoryError: String? = null,
+    onOpenLightProject: (String) -> Unit = {},
+    onOpenLightDemo: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
-    val homePreferences = remember(context) {
-        context.getSharedPreferences("physics_tracker_home", 0)
+    val homePreferences = remember(context) { context.getSharedPreferences("physics_tracker_home", 0) }
+    var homeTab by rememberSaveable { mutableStateOf(0) }
+    var historyTab by rememberSaveable { mutableStateOf("ALL") }
+    var projectPickerKind by rememberSaveable { mutableStateOf<String?>(null) }
+    var previousHistoryTab by rememberSaveable { mutableStateOf("ALL") }
+    fun openSaved(kind: String) {
+        previousHistoryTab = historyTab
+        historyTab = kind
+        projectPickerKind = kind
+        homeTab = 1
     }
+    fun backToStart() {
+        projectPickerKind = null
+        historyTab = previousHistoryTab
+        homeTab = 0
+    }
+    fun selectTab(index: Int) {
+        if (index == 1 && projectPickerKind != null) historyTab = "ALL"
+        projectPickerKind = null
+        homeTab = index.coerceIn(0, 2)
+    }
+    BackHandler(projectPickerKind != null) { backToStart() }
     var showLearningLinks by rememberSaveable {
-        mutableStateOf(homePreferences.getBoolean("show_learning_links", true))
+        mutableStateOf(homePreferences.getBoolean("show_learning_links", false))
     }
-    val toggleLearningLinks = {
-        showLearningLinks = !showLearningLinks
-        homePreferences.edit().putBoolean("show_learning_links", showLearningLinks).apply()
-    }
-    BoxWithConstraints(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(PhysicsColorBackground)
-    ) {
+    BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding().background(PhysicsColorBackground)) {
         val wide = maxWidth >= 760.dp
-        Column(modifier = Modifier.fillMaxSize()) {
-            LibraryHeader(
-                appVersion = appVersion,
-                showLearningLinks = showLearningLinks,
-                onToggleLearningLinks = toggleLearningLinks
-            )
-            if (wide) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(start = 24.dp, end = 24.dp, bottom = 20.dp),
-                    horizontalArrangement = Arrangement.spacedBy(20.dp)
-                ) {
-                    LibraryPrimaryColumn(
-                        projects = projects,
-                        onNewExperiment = onNewExperiment,
-                        onOpenProject = onOpenProject,
-                        onProjectActions = onProjectActions,
-                        modifier = Modifier.weight(1.7f)
-                    )
-                    if (showLearningLinks) {
-                        LearningColumn(
-                            onOpenLearning = onOpenLearning,
-                            modifier = Modifier
-                                .widthIn(min = 280.dp, max = 360.dp)
-                                .fillMaxHeight()
-                        )
-                    }
+        Column(Modifier.fillMaxSize()) {
+            LibraryHeader(appVersion)
+            androidx.compose.material3.TabRow(selectedTabIndex = homeTab, containerColor = PhysicsColorBackground) {
+                listOf("Start", "Projects", "Learn").forEachIndexed { index, label ->
+                    androidx.compose.material3.Tab(selected = homeTab == index, onClick = { selectTab(index) },
+                        text = { Text(label) })
                 }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    item { NewExperimentCard(onNewExperiment) }
-                    item { SectionHeading("Recent experiments", "${projects.size}") }
-                    if (projects.isEmpty()) {
-                        item { EmptyLibraryState(onNewExperiment) }
-                    } else {
-                        items(projects, key = { it.id }) { project ->
-                            ProjectRow(project, onOpenProject, onProjectActions)
+            }
+            Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = if (wide) 24.dp else 16.dp, vertical = 12.dp)
+                .testTag("home-page-content")
+                .pointerInput(homeTab, projectPickerKind) {
+                    var travel = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { travel = 0f },
+                        onHorizontalDrag = { change, amount -> travel += amount; change.consume() },
+                        onDragEnd = {
+                            if (kotlin.math.abs(travel) >= 72.dp.toPx()) {
+                                val next = (homeTab + if (travel < 0f) 1 else -1).coerceIn(0, 2)
+                                if (next != homeTab) selectTab(next)
+                            }
+                            travel = 0f
+                        },
+                        onDragCancel = { travel = 0f })
+                }) {
+                when (homeTab) {
+                    0 -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        if (wide) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Box(Modifier.weight(1f)) { DestinationCard("Motion", "${projects.count { it.videoUri.isNotEmpty() }} saved projects", "Open video", onNewExperiment,
+                                    onCardClick = { openSaved("EXPERIMENTS") }) }
+                                Box(Modifier.weight(1f)) { DestinationCard("Light intensity", "${lightProjects.size} saved projects", "Open photo or video", { onOpenLight?.invoke() },
+                                    onCardClick = { openSaved("LIGHT") }) }
+                            }
+                        } else {
+                            DestinationCard("Motion", "${projects.count { it.videoUri.isNotEmpty() }} saved projects", "Open video", onNewExperiment,
+                                onCardClick = { openSaved("EXPERIMENTS") })
+                            DestinationCard("Light intensity", "${lightProjects.size} saved projects", "Open photo or video", { onOpenLight?.invoke() },
+                                onCardClick = { openSaved("LIGHT") })
+                        }
+                        if (onOpenLive != null) OutlinedButton(onClick = onOpenLive, modifier = Modifier.heightIn(min = 48.dp)) { Text("Live camera") }
+                    }
+                    1 -> Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        val shown = when (historyTab) {
+                            "EXPERIMENTS" -> projects.filter { it.videoUri.isNotEmpty() }
+                            "LIVE" -> projects.filter { it.videoUri.isEmpty() }
+                            "LIGHT" -> emptyList()
+                            else -> projects
+                        }
+                        val shownLight = if (historyTab in listOf("ALL", "LIGHT")) lightProjects else emptyList()
+                        if (projectPickerKind != null) {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(onClick = ::backToStart) { Text("‹ Back to Start") }
+                                Text(if (projectPickerKind == "LIGHT") "Saved Light projects" else "Saved Motion projects",
+                                    style = MaterialTheme.typography.titleMedium)
+                            }
+                        } else Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            HistoryTabChip("All", historyTab == "ALL") { historyTab = "ALL" }
+                            HistoryTabChip("Motion", historyTab == "EXPERIMENTS") { historyTab = "EXPERIMENTS" }
+                            HistoryTabChip("Light", historyTab == "LIGHT") { historyTab = "LIGHT" }
+                            HistoryTabChip("Live", historyTab == "LIVE") { historyTab = "LIVE" }
+                        }
+                        lightHistoryError?.let { Text(it, color = PhysicsColorError) }
+                        LazyColumn(Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp),
+                            contentPadding = PaddingValues(bottom = 16.dp)) {
+                            if (shown.isEmpty() && shownLight.isEmpty()) item {
+                                Column(Modifier.padding(vertical = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    Text("No saved projects here yet.", color = PhysicsColorOnSurface)
+                                    OutlinedButton(onClick = {
+                                        when (projectPickerKind) {
+                                            "LIGHT" -> onOpenLight?.invoke()
+                                            "EXPERIMENTS" -> onNewExperiment()
+                                            else -> selectTab(0)
+                                        }
+                                        Unit
+                                    }) {
+                                        Text(if (projectPickerKind == "LIGHT") "Open photo or video"
+                                            else if (projectPickerKind == "EXPERIMENTS") "Open video" else "Start a project")
+                                    }
+                                }
+                            }
+                            items(shown, key = { "motion-${it.id}" }) { project -> ProjectRow(project, onOpenProject, onProjectActions) }
+                            items(shownLight, key = { "light-${it.id}" }) { project -> LightProjectRow(project) { onOpenLightProject(project.id) } }
                         }
                     }
-                    if (showLearningLinks) {
-                        item { SectionHeading("Learn", "Optional") }
-                        items(learningResources) { resource ->
-                            LearningRow(resource, onOpenLearning)
+                    else -> LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        item { DestinationCard("Try a demo", "Explore motion and light analysis with sample media.", "Browse demos", { onOpenLightDemo?.invoke() }) }
+                        item {
+                            OutlinedButton(onClick = {
+                                showLearningLinks = !showLearningLinks
+                                homePreferences.edit().putBoolean("show_learning_links", showLearningLinks).apply()
+                            }) { Text(if (showLearningLinks) "Hide learning links" else "More learning resources") }
                         }
+                        if (showLearningLinks) items(learningResources) { LearningRow(it, onOpenLearning) }
                     }
                 }
             }
@@ -157,9 +230,7 @@ fun ProjectLibraryScreen(
 
 @Composable
 private fun LibraryHeader(
-    appVersion: String,
-    showLearningLinks: Boolean,
-    onToggleLearningLinks: () -> Unit
+    appVersion: String
 ) {
     Row(
         modifier = Modifier
@@ -175,37 +246,21 @@ private fun LibraryHeader(
             border = BorderStroke(1.dp, PhysicsColorPrimary.copy(alpha = 0.35f))
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Text(
-                    "P",
-                    color = PhysicsColorPrimary,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Bold
-                )
+                PhysicsTrackerLogo(Modifier.size(42.dp))
             }
         }
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                "PhyZX",
+                "PhysicsTracker",
                 color = PhysicsColorOnBackground,
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold
             )
             Text(
-                "Motion measurement workspace",
+                "Motion & light analysis",
                 color = PhysicsColorOnSurface,
                 style = MaterialTheme.typography.bodySmall
-            )
-        }
-        OutlinedButton(
-            onClick = onToggleLearningLinks,
-            shape = RoundedCornerShape(10.dp),
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-            modifier = Modifier.padding(end = 10.dp)
-        ) {
-            Text(
-                if (showLearningLinks) "HIDE LINKS" else "SHOW LINKS",
-                style = MaterialTheme.typography.labelSmall
             )
         }
         Text(
@@ -223,10 +278,14 @@ private fun LibraryPrimaryColumn(
     onNewExperiment: () -> Unit,
     onOpenProject: (ProjectEntity) -> Unit,
     onProjectActions: (ProjectEntity) -> Unit,
+    onOpenLive: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier.fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         NewExperimentCard(onNewExperiment)
+        if (onOpenLive != null) {
+            LiveTrackingCard(onOpenLive)
+        }
         SectionHeading("Recent experiments", "${projects.size}")
         if (projects.isEmpty()) {
             EmptyLibraryState(onNewExperiment)
@@ -253,9 +312,7 @@ private fun NewExperimentCard(onNewExperiment: () -> Unit) {
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(20.dp),
+            modifier = Modifier.fillMaxWidth().padding(20.dp),
             horizontalArrangement = Arrangement.spacedBy(18.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -283,6 +340,137 @@ private fun NewExperimentCard(onNewExperiment: () -> Unit) {
             ) {
                 Text("New experiment", fontWeight = FontWeight.SemiBold)
             }
+        }
+    }
+}
+
+@Composable
+private fun LiveTrackingCard(onOpenLive: () -> Unit) {
+    Surface(
+        color = PhysicsColorSurface,
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, PhysicsColorDivider),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp),
+            horizontalArrangement = Arrangement.spacedBy(18.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text(
+                    "Live tracking",
+                    color = PhysicsColorOnBackground,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    "Track an object with the camera in real time and analyse it live. Fully offline.",
+                    color = PhysicsColorOnSurface,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            Button(
+                onClick = onOpenLive,
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 22.dp, vertical = 14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = PhysicsColorTrackA,
+                    contentColor = PhysicsColorCanvas
+                )
+            ) {
+                Text("Open live", fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryTabChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    OutlinedButton(
+        onClick = onClick,
+        shape = RoundedCornerShape(8.dp),
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+        border = BorderStroke(1.dp, if (selected) PhysicsColorPrimary else PhysicsColorDivider),
+        colors = ButtonDefaults.outlinedButtonColors(
+            containerColor = if (selected) PhysicsColorPrimary.copy(alpha = 0.18f) else Color.Transparent,
+            contentColor = if (selected) PhysicsColorPrimary else PhysicsColorOnSurface
+        )
+    ) {
+        Text(label, style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+@Composable
+private fun DestinationCard(
+    title: String,
+    subtitle: String,
+    buttonText: String,
+    onClick: () -> Unit,
+    accent: Boolean = false,
+    onCardClick: (() -> Unit)? = null
+) {
+    Surface(
+        color = PhysicsColorSurface,
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, PhysicsColorDivider),
+        modifier = Modifier.fillMaxWidth().then(if (onCardClick != null)
+            Modifier.testTag("open-saved-$title").clickable(onClick = onCardClick) else Modifier)
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text(title, color = PhysicsColorOnBackground, style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold)
+                    if (onCardClick != null) Text("Saved ›", color = PhysicsColorPrimary,
+                        style = MaterialTheme.typography.labelMedium)
+                }
+                Text(
+                    subtitle,
+                    color = PhysicsColorOnSurface,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            Button(
+                onClick = onClick,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 22.dp, vertical = 14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (accent) PhysicsColorTrackA else PhysicsColorPrimary,
+                    contentColor = PhysicsColorCanvas
+                )
+            ) {
+                Text(buttonText, fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun LightProjectRow(project: com.physicstracker.app.ui.light.LightProjectSummary, onOpen: () -> Unit) {
+    Surface(color = PhysicsColorSurface, shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, PhysicsColorDivider),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen)) {
+        Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Surface(Modifier.size(42.dp), shape = CircleShape, color = PhysicsColorPrimary.copy(alpha = 0.15f)) {
+                Box(contentAlignment = Alignment.Center) { Text(project.name.take(1).uppercase(), color = PhysicsColorPrimary) }
+            }
+            Column(Modifier.weight(1f)) {
+                Text(project.name, style = MaterialTheme.typography.titleMedium, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis)
+                Text("${if (project.video) "Video" else "Photo"} · ${project.samples} samples · ${formatProjectTimestamp(project.updatedAt)}",
+                    style = MaterialTheme.typography.bodySmall, color = PhysicsColorOnSurface, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis)
+            }
+            Text("›", color = PhysicsColorPrimary, style = MaterialTheme.typography.titleMedium)
         }
     }
 }
@@ -360,7 +548,8 @@ private fun ProjectRow(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    "Modified ${formatProjectTimestamp(project.updatedAt)}",
+                    if (project.videoUri.isEmpty()) "Live · ${formatProjectTimestamp(project.updatedAt)}"
+                    else "Modified ${formatProjectTimestamp(project.updatedAt)}",
                     color = PhysicsColorOnSurface,
                     style = MaterialTheme.typography.bodySmall,
                     fontFamily = FontFamily.Monospace
